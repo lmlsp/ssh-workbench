@@ -16,6 +16,7 @@ async function api(path,data,signal) {
 }
 
 function message(selector,text='') { const node=$(selector); node.textContent=text; node.hidden=!text; }
+function actionNotice(text) { message(state.view==='terminal'?'#sidebar-notice':'#notice',text); }
 function byId(collection,id) { return state.model[collection].find(row=>row.id===id); }
 function button(label,click) { const node=document.createElement('button'); node.type='button'; node.textContent=label; node.onclick=click; return node; }
 function select(node,options,current=node.value) {
@@ -56,6 +57,8 @@ function renderSidebar() {
   const server=currentServer(), active=workspace.active();
   $('#sidebar-title').textContent=server?.name || active?.meta.connectionName || '当前服务器';
   $('#sidebar-endpoint').textContent=server?endpoint(server):active?'已保存的连接已移除':'选择一个 SSH 连接';
+  const user=active?.packet?.context?.user;
+  message('#sidebar-target',active ? `终端 ${active.ordinal}${active.meta.closed?' · 已断开':user?' · '+user:''}` : '');
   $$('[data-side]').forEach(node=>node.setAttribute('aria-pressed',String(node.dataset.side===state.side)));
   const root=$('#sidebar-items');
   if(state.side==='history') {
@@ -122,10 +125,22 @@ function renderLists() {
 async function load(){ state.model=await api('state'); renderLists(); }
 
 function show(view) {
+  if(state.view!==view) {
+    window.scrollTo(0,0);
+    message('#notice'); message('#sidebar-notice'); setSidebarOpen(false);
+  }
   state.view=view; sessionStorage.setItem('workbenchView',view);
   $$('.view').forEach(node=>{node.hidden=node.id!=='view-'+view;});
   $$('.navigation button').forEach(node=>node.dataset.view===view?node.setAttribute('aria-current','page'):node.removeAttribute('aria-current'));
   workspace.visible=view==='terminal'; workspace.layout();
+}
+
+function setSidebarOpen(open,focus=false) {
+  const drawer=$('#terminal-sidebar');
+  drawer.dataset.open=String(open);
+  const toggle=$('#sidebar-toggle');
+  toggle.setAttribute('aria-expanded',String(open));
+  if(focus)(open?$('#sidebar-hide'):toggle).focus();
 }
 
 async function connect(id) {
@@ -139,25 +154,25 @@ async function connect(id) {
 }
 
 async function execute(data) {
-  message('#notice');
+  actionNotice('');
   const result=await api('run',data);
-  show('terminal'); workspace.focus(result.id,true);
+  show('terminal'); setSidebarOpen(false); workspace.focus(result.id,true);
 }
 
 function askRun(collection,item) {
   const panel=workspace.active();
-  if(!panel || panel.meta.closed) return message('#notice','请先选中一个已连接的 SSH 终端。');
+  if(!panel || panel.meta.closed) return actionNotice('请先选中一个已连接的 SSH 终端。');
   if(panel.meta.connection!==item.connection){
     const connection=byId('connections',item.connection);
-    return message('#notice',`请选择「${connection?.name || '对应 SSH 连接'}」的终端执行。`);
+    return actionNotice(`请选择「${connection?.name || '对应 SSH 连接'}」的终端执行。`);
   }
   const steps=collection==='flows'?item.steps.map(id=>byId('commands',id)).filter(Boolean):[item];
   const fields=Object.assign({},...steps.map(step=>step.params));
   const data={kind:collection==='flows'?'flow':'command',id:item.id,terminal:panel.meta.id};
-  if(!Object.keys(fields).length){void execute({...data,params:{}}).catch(error=>message('#notice',error.message));return;}
+  if(!Object.keys(fields).length){void execute({...data,params:{}}).catch(error=>actionNotice(error.message));return;}
   state.parameters=data;
   $('#parameters-title').textContent=item.name;
-  $('#parameters-terminal').textContent=`在「${panel.meta.connectionName}」的选中终端执行`;
+  $('#parameters-terminal').textContent=`执行位置 · 终端 ${panel.ordinal} · ${panel.meta.connectionName}`;
   $('#parameters-inputs').replaceChildren(...Object.entries(fields).map(([key,label])=>{
     const wrap=document.createElement('label'),input=document.createElement('input');
     wrap.textContent=label;input.name=key;input.required=true;input.maxLength=4000;wrap.append(input);return wrap;
@@ -248,6 +263,11 @@ $$('[data-side]').forEach(node=>{node.onclick=()=>{state.side=node.dataset.side;
 $('#attach-form').onsubmit=event=>{event.preventDefault();void connect($('#terminal-connection').value);};
 $('#terminal-connection').onchange=renderSidebar;
 $('#toggle-split').onclick=()=>workspace.toggleTiles();
+$('#sidebar-toggle').onclick=()=>setSidebarOpen($('#terminal-sidebar').dataset.open!=='true',true);
+$('#sidebar-hide').onclick=()=>setSidebarOpen(false,true);
+document.addEventListener('keydown',event=>{
+  if(event.key==='Escape' && !event.defaultPrevented && !$('dialog[open]') && $('#terminal-sidebar').dataset.open==='true')setSidebarOpen(false,true);
+});
 $('#library-server').onchange=renderLibrary;
 $('#new-command').onclick=()=>openEditor('commands');$('#new-flow').onclick=()=>openEditor('flows');
 $('#add-server').onclick=()=>openEditor('connections');
@@ -303,9 +323,9 @@ $('#delete-form').onsubmit=async event=>{
   catch(error){message('#delete-error',error.message);}finally{submit.disabled=false;}
 };
 
-function showLogin(){workspace.visible=false;workspace.layout();$('#workspace').hidden=true;$('#login').hidden=false;}
+function showLogin(){workspace.visible=false;workspace.layout();$('#workbench-navigation').hidden=true;$('#workspace').hidden=true;$('#login').hidden=false;}
 async function enter(){
-  await load();$('#workspace').hidden=false;$('#login').hidden=true;
+  await load();$('#workspace').hidden=false;$('#workbench-navigation').hidden=false;$('#login').hidden=true;
   const view=sessionStorage.getItem('workbenchView');
   show(['terminal','library','servers'].includes(view)?view:state.model.connections.length?'terminal':'servers');
   await workspace.refresh();

@@ -1,9 +1,10 @@
 'use strict';
 
 class TerminalPanel {
-  constructor(meta, workspace) {
+  constructor(meta, workspace, ordinal) {
     this.meta = meta;
     this.workspace = workspace;
+    this.ordinal = ordinal;
     this.revision = -1;
     this.packet = null;
     this.pendingInput = '';
@@ -11,11 +12,12 @@ class TerminalPanel {
     this.node = $('#terminal-template').content.firstElementChild.cloneNode(true);
     this.node.dataset.session = meta.id;
     this.host = $('.xterm-host', this.node);
+    $('.terminal-index', this.node).textContent=String(ordinal);
     $('.term-name', this.node).textContent = meta.name;
     $('.focus-pane', this.node).onclick = () => this.workspace.focus(this.meta.id, true);
     const close = $('.close-pane', this.node);
     close.onclick = () => this.workspace.close(this.meta.id);
-    close.setAttribute('aria-label', `关闭窗口 ${meta.name}`);
+    close.setAttribute('aria-label', `关闭终端 ${ordinal} · ${meta.connectionName}`);
     this.host.addEventListener('focusin', () => this.workspace.focus(this.meta.id));
     $$('[data-action]', this.node).forEach(node => { node.onclick = () => this.control(node.dataset.action); });
     this.applySize();
@@ -27,7 +29,7 @@ class TerminalPanel {
   open() {
     if (this.terminal) return;
     this.terminal = new Terminal({ fontFamily:'Cascadia Mono, Noto Sans Mono CJK SC, monospace', fontSize:14, cursorBlink:true,
-      theme:{background:'#132136', foreground:'#e4edf9', cursor:'#abceff', selectionBackground:'#345989'}, scrollback:4500 });
+      theme:{background:'#111c2c', foreground:'#e4edf9', cursor:'#abceff', selectionBackground:'#345989'}, scrollback:4500 });
     this.fit = new FitAddon.FitAddon();
     this.terminal.loadAddon(this.fit);
     this.terminal.open(this.host);
@@ -163,12 +165,13 @@ class TerminalPanel {
   render(packet) {
     const oldPhase = this.packet?.run?.phase;
     const oldHistory = this.packet?.history?.[0]?.id;
+    const oldUser = this.packet?.context?.user;
     this.packet = packet;
     this.meta.closed = packet.closed;
     const context = packet.context;
     $('.term-name',this.node).textContent = packet.run?.name || this.meta.connectionName;
     $('.term-context',this.node).textContent = packet.closed ? 'SSH 已断开' : context
-      ? `${this.meta.connectionName} · ${context.user} · ${context.directory}` : '正在连接。请在终端处理 SSH 提示。';
+      ? `${packet.run ? this.meta.connectionName+' · ' : ''}${context.user} · ${context.directory}` : '正在连接。请在终端处理 SSH 提示。';
     const run = packet.run;
     $('.run-info',this.node).hidden = !run;
     if (run) {
@@ -188,9 +191,10 @@ class TerminalPanel {
     }
     if (packet.closed || oldPhase !== run?.phase) this.workspace.drawTabs();
     const newest = packet.history?.[0];
-    if (this.workspace.active() === this && oldHistory!==newest?.id) {
-      if (newest?.switchTo && !run) state.side='history';
-      if (state.side==='history') renderSidebar();
+    if (this.workspace.active() === this) {
+      const changedHistory=oldHistory!==newest?.id;
+      if (changedHistory && newest?.switchTo && !run) state.side='history';
+      if (oldUser!==context?.user || packet.closed || changedHistory && state.side==='history')renderSidebar();
     }
   }
 }
@@ -202,11 +206,15 @@ class TerminalWorkspace {
     this.tiled = true;
     this.visible = false;
     this.sizes = new Map();
+    this.ordinals = new Map();
+    this.nextOrdinal = 1;
     try {
       const saved = JSON.parse(sessionStorage.getItem('terminalLayout'));
       this.selected = saved?.selected || saved?.slots?.[saved.focused] || null;
       this.tiled = saved?.mode !== 'single';
       if(saved?.sizes) this.sizes=new Map(Object.entries(saved.sizes));
+      if(saved?.ordinals) this.ordinals=new Map(Object.entries(saved.ordinals).filter(([,number])=>Number.isSafeInteger(number)&&number>0));
+      this.nextOrdinal=Math.max(0,...this.ordinals.values())+1;
       this.dismissed = new Set(Array.isArray(saved?.dismissed) ? saved.dismissed : []);
     } catch (_) { this.dismissed = new Set(); }
   }
@@ -218,10 +226,15 @@ class TerminalWorkspace {
     for (const entry of entries) {
       if (this.dismissed.has(entry.id)) continue;
       if (this.panels.has(entry.id)) this.panels.get(entry.id).meta=entry;
-      else this.panels.set(entry.id,new TerminalPanel(entry,this));
+      else {
+        const ordinal=this.ordinals.get(entry.id) || this.nextOrdinal++;
+        this.ordinals.set(entry.id,ordinal);
+        this.panels.set(entry.id,new TerminalPanel(entry,this,ordinal));
+      }
     }
     this.dismissed=new Set([...this.dismissed].filter(id=>ids.has(id)));
     for(const id of this.sizes.keys())if(!ids.has(id)||this.dismissed.has(id))this.sizes.delete(id);
+    for(const id of this.ordinals.keys())if(!ids.has(id)||this.dismissed.has(id))this.ordinals.delete(id);
     if (!this.panels.has(this.selected)) this.selected=this.panels.keys().next().value || null;
     this.layout();
   }
@@ -230,7 +243,7 @@ class TerminalWorkspace {
 
   focus(id, withKeyboard=false) {
     if (!this.panels.has(id)) return;
-    if (this.selected!==id) { this.selected=id; this.layout(); }
+    if (this.selected!==id) { this.selected=id; message('#sidebar-notice'); this.layout(); }
     if (withKeyboard) this.active()?.terminal?.focus();
   }
 
@@ -247,7 +260,7 @@ class TerminalWorkspace {
       await api(`${panel.path}/close`,{});
       this.dismissed.add(id); panel.dispose(); this.panels.delete(id);
       await this.refresh();
-    } catch(error) { message('#notice',error.message); }
+    } catch(error) { actionNotice(error.message); }
   }
 
   drawTabs() {
@@ -255,11 +268,15 @@ class TerminalWorkspace {
     root.hidden=this.panels.size===0;
     root.replaceChildren(...[...this.panels.values()].map(panel=>{
       const id=panel.meta.id, tab=document.createElement('span'); tab.className='terminal-tab';
-      const label=button(panel.meta.connectionName,()=>this.focus(id,true));
+      const label=button('',()=>this.focus(id,true));
       label.className='terminal-tab-label'; label.title=panel.meta.connectionName;
+      const number=document.createElement('span'), name=document.createElement('span');
+      number.className='terminal-index';number.textContent=String(panel.ordinal);
+      name.className='terminal-tab-name';name.textContent=panel.meta.connectionName;
+      label.append(number,name);label.setAttribute('aria-label',`终端 ${panel.ordinal} · ${panel.meta.connectionName}`);
       label.setAttribute('aria-pressed',String(this.active()===panel));
       if(panel.meta.closed) label.classList.add('offline');
-      const close=button('×',()=>this.close(id)); close.className='tab-close'; close.setAttribute('aria-label',`关闭 ${panel.meta.name}`);
+      const close=button('×',()=>this.close(id)); close.className='tab-close'; close.setAttribute('aria-label',`关闭终端 ${panel.ordinal}`);
       tab.append(label,close); return tab;
     }));
   }
@@ -308,6 +325,7 @@ class TerminalWorkspace {
     for(const panel of shown) {
       const active=panel===this.active();panel.node.classList.toggle('focused',active);
       $('.focus-pane',panel.node).hidden=!tiled||active;
+      $('.selected-pane',panel.node).hidden=!active;
       panel.mount();
     }
     this.watch(shown);
@@ -317,6 +335,6 @@ class TerminalWorkspace {
 
   persist() {
     sessionStorage.setItem('terminalLayout',JSON.stringify({selected:this.selected,mode:this.tiled?'grid':'single',
-      dismissed:[...this.dismissed],sizes:Object.fromEntries(this.sizes)}));
+      dismissed:[...this.dismissed],sizes:Object.fromEntries(this.sizes),ordinals:Object.fromEntries(this.ordinals)}));
   }
 }
