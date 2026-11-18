@@ -1,0 +1,12 @@
+/.data/
+/private/
+/.venv/
+__pycache__/
+*.py[cod]
+node_modules/
+.env
+.env.*
+*.key
+*.pem
+*.log
+*.sock
