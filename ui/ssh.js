@@ -49,6 +49,10 @@ function operationRow(collection,item,manage=false) {
   const identity=item.switchTo ? `${item.user} → ${item.switchTo}` : steps[0]?.user;
   const detail=[connection?.name,identity,item.type,collection==='flows'?`${item.steps.length} 步`:''].filter(Boolean).join(' · ');
   const actions=manage?[button('编辑',()=>openEditor(collection,item)),deleteButton('删除',collection,item.id)]:[];
+  if(manage && collection==='flows') {
+    const copy=button('复制',()=>copyFlow(item.id,copy));
+    actions.splice(1,0,copy);
+  }
   actions.push(button('执行',()=>askRun(collection,item)));
   return row(item.name,detail,actions);
 }
@@ -202,6 +206,28 @@ async function askDelete(collection,id) {
   } catch(error){message('#notice',error.message);}
 }
 
+async function copyFlow(id,control) {
+  control.disabled=true;
+  actionNotice('');
+  try {
+    const {flows}=await api('state');
+    const source=flows.find(item=>item.id===id);
+    if(!source)throw new Error('这条流程已不存在，请刷新后重试。');
+    const names=new Set(flows.map(item=>item.name));
+    const stem=source.name.replace(/（副本(?: \d+)?）$/,'') || source.name;
+    let name;
+    for(let number=1;;number++) {
+      const suffix=number===1?'（副本）':`（副本 ${number}）`;
+      name=Array.from(stem).slice(0,60-suffix.length).join('')+suffix;
+      if(!names.has(name))break;
+    }
+    const duplicate=await api('flows',{name,connection:source.connection,app:source.app||'',type:source.type||'',steps:[...source.steps]});
+    await load();
+    openEditor('flows',duplicate);
+  } catch(error) { actionNotice(error.message); }
+  finally { control.disabled=false; }
+}
+
 function showContext() {
   const connection=$('#edit-connection').value;
   const first=byId('commands',state.editor.steps[0]);
@@ -214,11 +240,78 @@ function drawSteps() {
   showContext();
   $('#step-list').replaceChildren(...state.editor.steps.map((id,index)=>{
     const step=byId('commands',id),li=document.createElement('li'); li.textContent=step?.name || '未知指令';
-    const move=delta=>{const rows=state.editor.steps;[rows[index],rows[index+delta]]=[rows[index+delta],rows[index]];drawSteps();};
-    const up=button('上移',()=>move(-1)),down=button('下移',()=>move(1));
-    up.disabled=index===0;down.disabled=index===state.editor.steps.length-1;
-    li.append(up,down,button('移除',()=>{state.editor.steps.splice(index,1);drawSteps();}));return li;
+    li.className='flow-step';
+    const handle=document.createElement('button');handle.type='button';handle.className='step-grip';
+    handle.title='拖动或用上下方向键排序';handle.setAttribute('aria-label',`调整第 ${index+1} 步：${li.textContent}`);
+    const number=document.createElement('span'),name=document.createElement('span');
+    number.textContent=String(index+1);number.className='step-order';name.textContent=li.textContent;name.className='step-name';
+    bindStepDrag(handle,li,index);
+    li.replaceChildren(handle,number,name,button('移除',()=>{state.editor.steps.splice(index,1);drawSteps();}));return li;
   }));
+}
+
+function moveStep(from,to) {
+  const steps=state.editor?.steps;
+  if(!steps || to===from || to<0 || to>=steps.length)return;
+  steps.splice(to,0,steps.splice(from,1)[0]);
+  drawSteps();
+  $$('#step-list .step-grip')[to]?.focus();
+}
+
+function bindStepDrag(handle,row,index) {
+  let drag;
+  const list=$('#step-list'), editor=$('#editor');
+  handle.onkeydown=event=>{
+    const offset=event.key==='ArrowUp'?-1:event.key==='ArrowDown'?1:0;
+    if(offset){event.preventDefault();moveStep(index,index+offset);}
+  };
+
+  function updateMarker() {
+    const bounds=list.getBoundingClientRect();
+    const rows=[...list.children];
+    let gap=null;
+    if(drag.x>=bounds.left-18 && drag.x<=bounds.right+18) {
+      const index=rows.findIndex(node=>{const box=node.getBoundingClientRect();return drag.y<box.top+box.height/2;});
+      gap=index<0?rows.length:index;
+    }
+    if(drag.gap===gap)return;
+    drag.marker?.classList.remove('drop-before','drop-after');
+    drag.gap=gap;
+    drag.marker=gap===null?null:rows[Math.min(gap,rows.length-1)];
+    drag.marker?.classList.add(gap===rows.length?'drop-after':'drop-before');
+  }
+
+  function scrollWhileDragging() {
+    if(!drag)return;
+    const bounds=editor.getBoundingClientRect();
+    const top=bounds.top+44-drag.y, bottom=drag.y-bounds.bottom+44;
+    const speed=top>0?-Math.min(14,top/3):bottom>0?Math.min(14,bottom/3):0;
+    if(speed) {
+      const previous=editor.scrollTop;editor.scrollTop+=speed;
+      if(editor.scrollTop!==previous)updateMarker();
+    }
+    drag.frame=requestAnimationFrame(scrollWhileDragging);
+  }
+
+  handle.onpointerdown=event=>{
+    if(event.button!==0 || !event.isPrimary)return;
+    event.preventDefault();handle.setPointerCapture(event.pointerId);
+    drag={id:event.pointerId,x:event.clientX,y:event.clientY,gap:null,marker:null};
+    row.classList.add('step-dragging');updateMarker();scrollWhileDragging();
+  };
+  handle.onpointermove=event=>{
+    if(drag?.id!==event.pointerId)return;
+    drag.x=event.clientX;drag.y=event.clientY;updateMarker();
+  };
+  function stop(event,drop=false) {
+    if(drag?.id!==event.pointerId)return;
+    const {gap,marker,frame}=drag;drag=null;
+    cancelAnimationFrame(frame);marker?.classList.remove('drop-before','drop-after');row.classList.remove('step-dragging');
+    if(drop && gap!==null)moveStep(index,gap-(gap>index?1:0));
+  }
+  handle.onpointerup=event=>stop(event,true);
+  handle.onpointercancel=event=>stop(event);
+  handle.onlostpointercapture=event=>stop(event);
 }
 
 function drawLabels() {

@@ -98,6 +98,17 @@
 .editor-dialog textarea { width:100%; min-height:100px; color:#182d4b; background:#f9fbfe; border:1px solid var(--control-line); border-radius:8px; padding:8px; font:13px/1.7 ui-monospace,monospace; resize:vertical; }
 .editor-dialog button:not(.icon-button) { justify-self:start; }
 .dialog-actions { justify-content:flex-end; margin-top:8px; }.secret-line input { flex:1; }
+#step-list { display:grid; gap:6px; list-style:none; padding:0; }
+#step-list .flow-step { position:relative; display:flex; align-items:center; gap:7px; min-width:0; margin:0; padding:5px 7px; background:var(--surface); border:1px solid var(--line); border-radius:7px; }
+.flow-step .step-name { flex:1; min-width:0; overflow-wrap:anywhere; }
+.step-order { color:var(--muted); font:650 .8rem ui-monospace,monospace; }
+#step-list button { margin:0; }
+#step-list .step-grip { position:relative; width:28px; height:28px; padding:0; flex:none; border-color:transparent; background:transparent; cursor:grab; touch-action:none; }
+.step-grip::before { content:''; position:absolute; inset:6px 8px; background:radial-gradient(circle,#5b7290 1px,transparent 1.7px) 0 0/6px 5px; }
+.step-dragging { opacity:.55; user-select:none; }
+#step-list .step-dragging .step-grip { cursor:grabbing; }
+.flow-step.drop-before::after,.flow-step.drop-after::after { content:''; position:absolute; z-index:1; left:0; right:0; height:2px; border-radius:2px; background:var(--primary); pointer-events:none; }
+.flow-step.drop-before::after { top:-5px; }.flow-step.drop-after::after { bottom:-5px; }
 #parameter-labels label,#parameters-inputs label { display:grid; gap:4px; margin-bottom:4px; }
 #delete-items { overflow-wrap:anywhere; }
 @media(max-width: 820px) {
