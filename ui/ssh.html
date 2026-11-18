@@ -34,17 +34,15 @@
     <section id="view-terminal" class="view">
       <div class="page-heading"><div><h1>终端</h1><p>选择连接打开 SSH 终端，或在右侧运行自动化流程。</p></div><button data-view="servers">管理连接</button></div>
       <div class="terminal-toolbar">
-        <form id="attach-form" class="connect-line"><label for="terminal-connection">SSH 连接</label><select id="terminal-connection"></select><button class="primary" type="submit">新建终端</button></form>
-        <button type="button" id="toggle-split" aria-pressed="false" disabled>左右分屏</button>
+        <form id="attach-form" class="connect-line"><label for="terminal-connection">SSH 连接</label><select id="terminal-connection"></select><button class="primary" type="submit">添加窗口</button></form>
+        <button type="button" id="toggle-split" aria-pressed="false" disabled>平铺窗口</button>
       </div>
       <p id="terminal-empty" hidden>先在「服务器」添加一个 SSH 连接。</p>
       <div class="terminal-desk">
         <div class="terminal-stack">
           <div id="terminal-tabs" class="terminal-tabs" aria-label="已打开终端" role="group"></div>
-          <div id="terminal-main" class="terminal-panes">
-            <section class="terminal-slot" data-slot="0" aria-label="左侧终端"></section>
-            <section class="terminal-slot" data-slot="1" aria-label="右侧终端" hidden></section>
-          </div>
+          <div id="terminal-main" class="terminal-panes"></div>
+          <p id="no-terminal-windows" class="terminal-placeholder">添加窗口后，在这里显示 SSH 终端。</p>
         </div>
         <aside class="terminal-sidebar">
           <h2 id="sidebar-title">当前服务器</h2><p class="sidebar-endpoint" id="sidebar-endpoint"></p>
@@ -96,7 +94,7 @@
   <dialog id="delete-dialog" class="editor-dialog"><form id="delete-form"><h2 id="delete-title"></h2><p id="delete-message"></p><ul id="delete-items"></ul><p id="delete-error" class="error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-delete" type="button">取消</button><button id="confirm-delete" type="submit" class="danger-fill">确认删除</button></div></form></dialog>
 
   <template id="terminal-template"><article class="terminal-card">
-    <div class="terminal-heading"><div><strong class="term-name"></strong><p class="term-context">正在连接…</p></div><button type="button" class="focus-pane">选中此终端</button></div>
+    <div class="terminal-heading"><div><strong class="term-name"></strong><p class="term-context">正在连接…</p></div><div class="actions"><button type="button" class="focus-pane">选中</button><button type="button" class="close-pane" aria-label="关闭窗口" title="关闭窗口">×</button></div></div>
     <div class="run-info" hidden><p class="run-message" role="status"></p><ol class="run-steps"></ol>
       <div class="actions run-controls"><button data-action="takeover">接管终端</button><button data-action="retry">重试本步</button><button data-action="next">本步已完成，继续</button><button data-action="end">结束流程</button></div>
     </div>

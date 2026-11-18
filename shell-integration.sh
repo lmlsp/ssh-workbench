@@ -16,15 +16,19 @@ __ow_emit() {
     printf '\033]777;OW:%s:%s\a' "$OW_NONCE" "$payload"
 }
 
-__ow_prompt() {
-    local status=$? line command
+__ow_latest_command() {
+    local line
     line=$(HISTTIMEFORMAT= builtin history 1)
-    if [[ $line =~ ^[[:space:]]*([0-9]+)[\ \*]+(.*)$ ]]; then
-        if [[ ${BASH_REMATCH[1]} != "$__ow_history" ]]; then
-            __ow_history=${BASH_REMATCH[1]}
-            command=${BASH_REMATCH[2]}
-            __ow_emit H "$__ow_user" "$__ow_prior" "$status" "$command"
-        fi
+    [[ $line =~ ^[[:space:]]*([0-9]+)[\ \*]+(.*)$ ]] || return 1
+    __ow_latest_number=${BASH_REMATCH[1]}
+    __ow_latest_script=${BASH_REMATCH[2]}
+}
+
+__ow_prompt() {
+    local status=$?
+    if __ow_latest_command && [[ $__ow_latest_number != "$__ow_history" ]]; then
+        __ow_history=$__ow_latest_number
+        __ow_emit H "$__ow_user" "$__ow_prior" "$status" "$__ow_latest_script"
     fi
     __ow_prior=$PWD
     __ow_emit P "$__ow_user" "$PWD"
@@ -65,12 +69,37 @@ __ow_dispatch() {
 unalias su 2>/dev/null || true
 su() {
     if [[ $# == 2 && ($1 == '-' || $1 == '-l' || $1 == '--login') && $2 =~ ^[a-zA-Z_][a-zA-Z0-9_.-]*[$]?$ ]]; then
-        command su - "$2" --session-command "OW_BOOT=$OW_BOOT OW_NONCE=$OW_NONCE exec /bin/bash -c 'exec /bin/bash --rcfile <(printf %s \"\$OW_BOOT\" | base64 -d) -i'"
+        local parent='' direct='^[[:blank:]]*su[[:blank:]]+(-|-l|--login)[[:blank:]]+([a-zA-Z_][a-zA-Z0-9_.-]*[$]?|"[a-zA-Z_][a-zA-Z0-9_.-]*[$]?"|'\''[a-zA-Z_][a-zA-Z0-9_.-]*[$]?'\'')[[:blank:]]*$' status
+        if __ow_latest_command && [[ $__ow_latest_number != "$__ow_history" && $__ow_latest_script =~ $direct ]]; then
+            parent=$(printf '%s\0' "$__ow_user" "$PWD" "$__ow_latest_script" "$2" | base64 -w0)
+            __ow_history=$__ow_latest_number
+        fi
+        command su - "$2" --session-command "OW_PARENT=$parent OW_BOOT=$OW_BOOT OW_NONCE=$OW_NONCE exec /bin/bash -c 'exec /bin/bash --rcfile <(printf %s \"\$OW_BOOT\" | base64 -d) -i'"
+        status=$?
+        if [[ $status -ne 0 && -n $parent ]]; then
+            # A failed switch returns to the original shell, which can record its failure normally.
+            __ow_history=0
+        fi
+        return "$status"
     else
         command su "$@"
     fi
 }
 
+__ow_record_switch() {
+    local user directory script target
+    [[ -n ${OW_PARENT:-} ]] || return 0
+    {
+        IFS= read -r -d '' user && IFS= read -r -d '' directory &&
+        IFS= read -r -d '' script && IFS= read -r -d '' target
+    } < <(printf %s "$OW_PARENT" | base64 -d) || return
+    if [[ $__ow_user == "$target" ]]; then
+        __ow_emit S "$user" "$directory" "$script" "$target"
+    fi
+}
+
+__ow_record_switch
+unset OW_PARENT
 bind -m emacs-standard -x '"\C-x\C-g":__ow_dispatch'
 bind -m vi-insert -x '"\C-x\C-g":__ow_dispatch'
 PROMPT_COMMAND=(__ow_prompt "${PROMPT_COMMAND[@]}")

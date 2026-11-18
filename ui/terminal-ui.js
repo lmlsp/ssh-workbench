@@ -4,7 +4,7 @@ class TerminalPanel {
   constructor(meta, workspace) {
     this.meta = meta;
     this.workspace = workspace;
-    this.revision = 0;
+    this.revision = -1;
     this.packet = null;
     this.pendingInput = '';
     this.inputChain = Promise.resolve();
@@ -13,6 +13,9 @@ class TerminalPanel {
     this.host = $('.xterm-host', this.node);
     $('.term-name', this.node).textContent = meta.name;
     $('.focus-pane', this.node).onclick = () => this.workspace.focus(this.meta.id, true);
+    const close = $('.close-pane', this.node);
+    close.onclick = () => this.workspace.close(this.meta.id);
+    close.setAttribute('aria-label', `关闭窗口 ${meta.name}`);
     this.host.addEventListener('focusin', () => this.workspace.focus(this.meta.id));
     $$('[data-action]', this.node).forEach(node => { node.onclick = () => this.control(node.dataset.action); });
   }
@@ -40,16 +43,9 @@ class TerminalPanel {
   mount() {
     this.open();
     requestAnimationFrame(() => this.resize());
-    if (!this.subscription && !this.packet?.closed) {
-      this.subscription = new AbortController();
-      void this.read(this.subscription);
-    }
   }
 
-  unmount() { this.subscription?.abort(); this.subscription = null; }
-
   dispose() {
-    this.unmount();
     clearTimeout(this.inputTimer);
     this.observer?.disconnect();
     this.terminal?.dispose();
@@ -88,25 +84,12 @@ class TerminalPanel {
     el.hidden = !text;
   }
 
-  async read(subscription) {
-    while (!subscription.signal.aborted) {
-      try {
-        const packet = await api(`${this.path}/events?after=${this.revision}&wait=1`, undefined, subscription.signal);
-        if (subscription.signal.aborted) return;
-        if (packet.reset) this.terminal.reset();
-        if (packet.text) this.terminal.write(Uint8Array.from(atob(packet.text), char=>char.charCodeAt(0)));
-        this.revision = packet.revision;
-        this.render(packet);
-        if (packet.closed) break;
-      } catch (error) {
-        if (subscription.signal.aborted) return;
-        if (error.status === 401) { showLogin(); return; }
-        this.error(error.status === 400 ? error.message : '正在重新连接终端显示…');
-        if (error.status === 400) { void this.workspace.refresh(); break; }
-        await new Promise(resolve => setTimeout(resolve, 850));
-      }
-    }
-    if (this.subscription === subscription) this.subscription = null;
+  accept(packet) {
+    if (packet.reset) this.terminal.reset();
+    if (packet.text) this.terminal.write(Uint8Array.from(atob(packet.text), char=>char.charCodeAt(0)));
+    this.revision = packet.revision;
+    if(this.reconnecting){this.reconnecting=false;this.error('');}
+    this.render(packet);
   }
 
   render(packet) {
@@ -130,28 +113,30 @@ class TerminalPanel {
       $('[data-action="takeover"]',this.node).hidden = !activePhases.includes(run.phase) || run.takeover || run.phase === 'paused';
       for (const action of ['retry','next']) {
         const node = $(`[data-action="${action}"]`,this.node);
-        node.hidden = run.phase !== 'paused'; node.disabled = !packet.ready || context?.user !== run.user;
+        const expected = action==='next' && run.switchTo ? run.switchTo : run.user;
+        node.hidden = run.phase !== 'paused'; node.disabled = !packet.ready || context?.user !== expected;
       }
       $('[data-action="end"]',this.node).hidden = !activePhases.includes(run.phase);
     }
     if (packet.closed || oldPhase !== run?.phase) this.workspace.drawTabs();
-    if (this.workspace.active() === this && state.side==='history' && oldHistory!==packet.history?.[0]?.id) renderSidebar();
-    this.resize();
+    const newest = packet.history?.[0];
+    if (this.workspace.active() === this && oldHistory!==newest?.id) {
+      if (newest?.switchTo && !run) state.side='history';
+      if (state.side==='history') renderSidebar();
+    }
   }
 }
 
 class TerminalWorkspace {
   constructor() {
     this.panels = new Map();
-    this.slots = [null,null];
-    this.focused = 0;
-    this.split = false;
+    this.selected = null;
+    this.tiled = true;
     this.visible = false;
     try {
       const saved = JSON.parse(sessionStorage.getItem('terminalLayout'));
-      if (Array.isArray(saved?.slots)) this.slots = [saved.slots[0] || null, saved.slots[1] || null];
-      this.split = Boolean(saved?.split);
-      this.focused = this.split && saved?.focused === 1 ? 1 : 0;
+      this.selected = saved?.selected || saved?.slots?.[saved.focused] || null;
+      this.tiled = saved?.mode !== 'single';
       this.dismissed = new Set(Array.isArray(saved?.dismissed) ? saved.dismissed : []);
     } catch (_) { this.dismissed = new Set(); }
   }
@@ -166,39 +151,20 @@ class TerminalWorkspace {
       else this.panels.set(entry.id,new TerminalPanel(entry,this));
     }
     this.dismissed=new Set([...this.dismissed].filter(id=>ids.has(id)));
-    this.slots=this.slots.map(id=>this.panels.has(id)?id:null);
-    if (!this.slots[0]) this.slots[0]=this.slots[1] || this.panels.keys().next().value || null;
-    if (this.slots[1]===this.slots[0]) this.slots[1]=null;
-    if (this.split && !this.slots[1]) this.slots[1]=[...this.panels.keys()].find(id=>id!==this.slots[0]) || null;
-    if (!this.slots[this.focused]) this.focused=0;
+    if (!this.panels.has(this.selected)) this.selected=this.panels.keys().next().value || null;
     this.layout();
   }
 
-  active() { return this.panels.get(this.slots[this.focused]); }
+  active() { return this.panels.get(this.selected); }
 
   focus(id, withKeyboard=false) {
-    const slot=this.slots.indexOf(id);
-    if (slot < 0 || (!this.split && slot===1)) return;
-    if (this.focused!==slot) { this.focused=slot; this.layout(); }
+    if (!this.panels.has(id)) return;
+    if (this.selected!==id) { this.selected=id; this.layout(); }
     if (withKeyboard) this.active()?.terminal?.focus();
   }
 
-  choose(id, fresh=false) {
-    if (!this.panels.has(id)) return;
-    const displayed=this.slots.indexOf(id);
-    if (displayed!==-1 && (displayed===0 || this.split)) return this.focus(id,true);
-    if (this.split && fresh && !this.slots[1]) this.focused=1;
-    this.slots[this.focused]=id;
-    if (!this.split && this.slots[1]===id) this.slots[1]=null;
-    this.layout();
-    this.active()?.terminal?.focus();
-  }
-
-  toggleSplit() {
-    this.split=!this.split;
-    if (this.split) this.slots[1]=[...this.panels.keys()].find(id=>id!==this.slots[0]) || null;
-    else if (this.focused===1 && this.slots[1]) this.slots[0]=this.slots[1];
-    this.focused=0;
+  toggleTiles() {
+    this.tiled=!this.tiled;
     this.layout();
     this.active()?.terminal?.focus();
   }
@@ -218,7 +184,7 @@ class TerminalWorkspace {
     root.hidden=this.panels.size===0;
     root.replaceChildren(...[...this.panels.values()].map(panel=>{
       const id=panel.meta.id, tab=document.createElement('span'); tab.className='terminal-tab';
-      const label=button(panel.meta.name,()=>this.choose(id));
+      const label=button(panel.meta.name,()=>this.focus(id,true));
       label.className='terminal-tab-label'; label.title=panel.meta.connectionName;
       label.setAttribute('aria-pressed',String(this.active()===panel));
       if(panel.meta.closed) label.classList.add('offline');
@@ -227,29 +193,54 @@ class TerminalWorkspace {
     }));
   }
 
-  layout() {
-    const actual=this.visible ? this.slots.slice(0,this.split?2:1) : [];
-    for (const [id,panel] of this.panels) if (!actual.includes(id)) panel.unmount();
-    $('#terminal-main').classList.toggle('split',this.split);
-    const splitter=$('#toggle-split'); splitter.disabled=this.panels.size===0;
-    splitter.setAttribute('aria-pressed',String(this.split)); splitter.textContent=this.split?'退出分屏':'左右分屏';
-    $$('.terminal-slot').forEach((slot,index)=>{
-      slot.hidden=index===1&&!this.split;
-      if (slot.hidden) return;
-      const panel=this.panels.get(actual[index]);
-      slot.classList.toggle('focused',this.focused===index&&Boolean(panel));
-      if (panel) {
-        if (slot.firstChild!==panel.node) slot.replaceChildren(panel.node);
-        $('.focus-pane',panel.node).hidden=!this.split||this.focused===index;
-        panel.mount();
-      } else {
-        const empty=document.createElement('p'); empty.className='terminal-placeholder';
-        empty.textContent=index===0?'新建终端后，在这里显示 SSH 会话。':'新建终端或选择上方其他终端标签。';
-        const focus=button('在右侧打开',()=>{this.focused=1; this.layout(); $('#terminal-connection').focus();});
-        focus.hidden=index===0||this.focused===1; slot.replaceChildren(empty,focus);
+  watch(panels) {
+    const visible=panels.filter(panel=>!panel.packet?.closed);
+    const selection=visible.map(panel=>panel.meta.id).join(',');
+    if (this.subscription?.selection===selection) return;
+    this.subscription?.abort(); this.subscription=null;
+    if (!visible.length) return;
+    const controller=new AbortController(); controller.selection=selection;
+    this.subscription=controller;
+    void this.read(controller,visible);
+  }
+
+  async read(controller,panels) {
+    while (!controller.signal.aborted) {
+      const terminals=panels.filter(panel=>!panel.packet?.closed)
+        .map(panel=>({id:panel.meta.id,after:panel.revision}));
+      if(!terminals.length)break;
+      try {
+        const result=await api('terminal-events',{terminals},controller.signal);
+        if(controller.signal.aborted)return;
+        for(const packet of result.packets)this.panels.get(packet.id)?.accept(packet);
+        if(result.missing.length){await this.refresh();break;}
+      } catch(error) {
+        if(controller.signal.aborted)return;
+        if(error.status===401){showLogin();return;}
+        panels.forEach(panel=>{panel.reconnecting=true;panel.error('正在重新连接终端显示…');});
+        await new Promise(resolve=>setTimeout(resolve,850));
       }
-    });
+    }
+    if(this.subscription===controller)this.subscription=null;
+  }
+
+  layout() {
+    const root=$('#terminal-main');
+    const tiled=this.tiled && this.panels.size>1;
+    const shown=!this.visible ? [] : tiled ? [...this.panels.values()] : [this.active()].filter(Boolean);
+    const nodes=shown.map(panel=>panel.node);
+    if(nodes.length!==root.children.length || nodes.some((node,i)=>node!==root.children[i]))root.replaceChildren(...nodes);
+    root.classList.toggle('tiled',tiled);
+    const splitter=$('#toggle-split'); splitter.disabled=this.panels.size<2;
+    splitter.setAttribute('aria-pressed',String(tiled)); splitter.textContent=tiled?'单窗口':'平铺窗口';
+    $('#no-terminal-windows').hidden=this.panels.size>0;
+    for(const panel of shown) {
+      const active=panel===this.active();panel.node.classList.toggle('focused',active);
+      $('.focus-pane',panel.node).hidden=!tiled||active;
+      panel.mount();
+    }
+    this.watch(shown);
     this.drawTabs(); renderSidebar();
-    sessionStorage.setItem('terminalLayout',JSON.stringify({slots:this.slots,split:this.split,focused:this.focused,dismissed:[...this.dismissed]}));
+    sessionStorage.setItem('terminalLayout',JSON.stringify({selected:this.selected,mode:this.tiled?'grid':'single',dismissed:[...this.dismissed]}));
   }
 }

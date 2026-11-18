@@ -63,6 +63,20 @@ def command_text(value):
     return value
 
 
+def switch_target(script):
+    """Recognize a standalone, literal su login command."""
+    script = script.strip()
+    if '\n' in script or '\r' in script:
+        return None
+    try:
+        words = shlex.split(script)
+    except ValueError:
+        return None
+    if len(words) == 3 and words[0] == 'su' and words[1] in ('-', '-l', '--login') and USER.fullmatch(words[2]):
+        return words[2]
+    return None
+
+
 def render(script, values):
     """Replace complete, unquoted shell words with a single quoted argument."""
     placeholders = {match.start(): match for match in PARAM.finditer(script)}
@@ -134,7 +148,11 @@ def unseal(command):
 
 
 def public(item):
-    return {**{k: v for k, v in item.items() if k != 'secret'}, 'passwordSet': bool(item.get('secret'))}
+    row = {**{k: v for k, v in item.items() if k != 'secret'}, 'passwordSet': bool(item.get('secret'))}
+    target = switch_target(item['script'])
+    if target:
+        row['switchTo'] = target
+    return row
 
 
 class Store:
@@ -244,6 +262,9 @@ class Store:
                     params = {value: clean(labels, value, 40, False) or value for value in dict.fromkeys(PARAM.findall(script))}
                     render(script, dict.fromkeys(params, 'test parameter'))
                     item.update(user=user, directory=directory, script=script, params=params)
+                    target = switch_target(script)
+                    if target and any(identifier in flow['steps'] for flow in state['flows']):
+                        raise ValueError('请先从流程移除这条指令，再改成切换用户指令')
                     if previous and (previous['connection'], previous['user']) != (connection, user):
                         for flow in state['flows']:
                             if identifier not in flow['steps']:
@@ -257,7 +278,8 @@ class Store:
                             raise ValueError('切换密码的格式不正确')
                         if password:
                             item['secret'] = seal(identifier, password)
-                    elif (previous.get('secret') and previous['connection'] == connection and previous['user'] == user):
+                    elif (previous.get('secret') and previous['connection'] == connection and previous['user'] == user
+                          and switch_target(previous['script']) == target):
                         item['secret'] = previous['secret']
                 else:
                     steps = data.get('steps')
@@ -280,6 +302,8 @@ class Store:
         if not isinstance(steps, list) or not 2 <= len(steps) <= 24:
             raise ValueError('请按顺序加入 2 至 24 条快捷指令')
         commands = [match(state, 'commands', identifier) for identifier in steps]
+        if any(switch_target(step['script']) for step in commands):
+            raise ValueError('切换用户指令请单独执行。流程中的步骤使用同一个执行用户。')
         if any(step['connection'] != connection or step['user'] != commands[0]['user'] for step in commands):
             raise ValueError('流程中的快捷指令须使用同一服务器连接和执行用户')
         return commands
@@ -296,8 +320,12 @@ class Store:
             for step in steps:
                 bound = {name: clean(values, name, 4000) for name in step['params']}
                 script = command_text(render(step['script'], bound))
-                result.append({'name': step['name'], 'user': step['user'], 'directory': step['directory'],
-                               'script': script, 'status': 'pending'})
+                planned = {'name': step['name'], 'user': step['user'], 'directory': step['directory'],
+                           'script': script, 'status': 'pending'}
+                target = switch_target(step['script'])
+                if target:
+                    planned['switchTo'] = target
+                result.append(planned)
             password = next((unseal(step) for step in steps if step.get('secret')), None)
             return chosen['name'], connection, result, password
 

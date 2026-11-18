@@ -41,11 +41,12 @@ def pack(fields):
 
 
 class Terminal:
-    def __init__(self, connection, on_close=None):
+    def __init__(self, connection, on_close=None, on_event=None):
         self.id = secrets.token_urlsafe(16)
         self.nonce = secrets.token_hex(18)
         self.connection = dict(connection)
         self.on_close = on_close
+        self.on_event = on_event
         self.condition = threading.Condition(threading.RLock())
         self.output = deque()
         self.size = 0
@@ -89,6 +90,8 @@ class Terminal:
     def changed(self):
         self.revision += 1
         self.condition.notify_all()
+        if self.on_event:
+            self.on_event()
 
     def visible(self, chunk):
         if not chunk:
@@ -162,16 +165,27 @@ class Terminal:
                 pass
             data = data[end + 1:]
 
+    def remember(self, user, directory, status, script, switch_to=None):
+        if script.strip() and len(script) <= 32000:
+            entry = {'id': secrets.token_urlsafe(9), 'user': user, 'directory': directory,
+                     'exitCode': status, 'script': script}
+            if switch_to:
+                entry['switchTo'] = switch_to
+            self.history.appendleft(entry)
+            self.changed()
+
     def marker(self, fields):
         if not fields:
             return
         event, *values = fields
         if event == 'H' and len(values) == 4:
             user, directory, status, script = values
-            if script.strip() and len(script) <= 32000:
-                self.history.appendleft({'id': secrets.token_urlsafe(9), 'user': user, 'directory': directory,
-                                         'exitCode': int(status), 'script': script})
-                self.changed()
+            self.remember(user, directory, int(status), script)
+        elif event == 'S' and len(values) == 4:
+            user, directory, script, target = values
+            self.remember(user, directory, 0, script, target)
+            if self.run and self.run['phase'] == 'switching' and self.run['switchingTo'] == target:
+                self.run['switchAcknowledged'] = True
         elif event == 'P' and len(values) == 2:
             self.context = {'user': values[0], 'directory': values[1]}
             self.ready = True
@@ -179,8 +193,8 @@ class Terminal:
             if self.run and self.run['phase'] == 'running':
                 self.run['steps'][self.run['index']]['status'] = 'needs-review'
                 self.pause('当前命令已中断，处理完后可重试或继续。')
-            elif self.run and self.run['phase'] == 'switching' and values[0] != self.run['user']:
-                self.pause('未能切换到所需用户。请在终端切换身份后继续。')
+            elif self.run and self.run['phase'] == 'switching':
+                self.finish_switch(values[0])
             else:
                 self.advance()
         elif event == 'D':
@@ -211,34 +225,58 @@ class Terminal:
         with self.condition:
             self.run = {'name': name, 'user': steps[0]['user'], 'steps': steps, 'index': 0,
                         'phase': 'connecting', 'message': '正在连接服务器', 'password': password,
-                        'takeover': False, 'ticket': None}
+                        'takeover': False, 'ticket': None, 'switchTo': steps[0].get('switchTo') if len(steps) == 1 else None}
             self.changed()
             self.advance()
 
-    def advance(self):
+    def request_switch(self, user, script):
         run = self.run
-        if not run or not self.ready or run['phase'] not in ('connecting', 'switching', 'between'):
-            return
-        if self.context['user'] != run['user']:
-            if run['phase'] == 'switching':
-                return
-            if not run.get('password'):
-                self.pause(f"请在终端切换到 {run['user']}，再继续。")
-                return
-            self.ready = False
-            self.prompt = b''
-            self.secret_consumed = False
-            run['phase'] = 'switching'
-            run['message'] = f"正在切换到 {run['user']}"
-            self.changed()
-            self.write(f"su - {shlex.quote(run['user'])}\r".encode())
+        self.ready = False
+        self.prompt = b''
+        self.secret_consumed = False
+        run['phase'] = 'switching'
+        run['switchingTo'] = user
+        run['switchAcknowledged'] = False
+        run['message'] = f'正在切换到 {user}'
+        self.changed()
+        self.write((script + '\r').encode())
+
+    def finish_switch(self, user):
+        run = self.run
+        if user != run['switchingTo'] or (run['switchTo'] == run['user'] and not run['switchAcknowledged']):
+            if run['switchTo']:
+                run['steps'][run['index']]['status'] = 'failed'
+            self.pause('未能切换到所需用户。请处理终端中的提示，或重试。')
             return
         run['password'] = None
+        if run['switchTo']:
+            run['steps'][run['index']].update(status='succeeded', exitCode=0)
+            run['index'] += 1
+        run['phase'] = 'between'
+        self.advance()
+
+    def advance(self):
+        run = self.run
+        if not run or not self.ready or run['phase'] not in ('connecting', 'between'):
+            return
         if run['index'] >= len(run['steps']):
             run['phase'] = 'succeeded'
-            run['message'] = '流程完成'
+            run['password'] = None
+            run['message'] = f"已切换到 {run['switchTo']}" if run['switchTo'] else '流程完成'
             self.changed()
             return
+        if self.context['user'] != run['user']:
+            if run['switchTo'] or not run.get('password'):
+                self.pause(f"请在终端切换到 {run['user']}，再继续。")
+                return
+            self.request_switch(run['user'], f"su - {shlex.quote(run['user'])}")
+            return
+        if run['switchTo']:
+            step = run['steps'][run['index']]
+            step['status'] = 'running'
+            self.request_switch(run['switchTo'], step['script'].strip())
+            return
+        run['password'] = None
         self.ready = False
         run['phase'] = 'dispatch'
         run['ticket'] = secrets.token_hex(12)
@@ -286,8 +324,9 @@ class Terminal:
             elif action in ('retry', 'next'):
                 if run['phase'] != 'paused' or not self.ready or not self.context:
                     raise ValueError('请等当前命令返回到终端提示符')
-                if self.context['user'] != run['user']:
-                    raise ValueError(f"请先在终端切换到 {run['user']}")
+                expected = run['switchTo'] if action == 'next' and run['switchTo'] else run['user']
+                if self.context['user'] != expected:
+                    raise ValueError(f'请先在终端切换到 {expected}')
                 step = run['steps'][run['index']]
                 if action == 'next':
                     if step['status'] != 'succeeded':
@@ -308,7 +347,7 @@ class Terminal:
             run = None
             if self.run:
                 source = self.run
-                run = {key: source[key] for key in ('phase', 'name', 'index', 'message', 'takeover', 'user')}
+                run = {key: source[key] for key in ('phase', 'name', 'index', 'message', 'takeover', 'user', 'switchTo')}
                 run['steps'] = [{key: step[key] for key in ('name', 'status')} for step in source['steps']]
             return {'id': self.id, 'connection': self.connection['id'], 'revision': self.revision,
                     'reset': after < self.floor, 'text': base64.b64encode(content).decode(), 'ready': self.ready,

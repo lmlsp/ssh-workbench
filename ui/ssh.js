@@ -45,7 +45,8 @@ function deleteButton(label,kind,id) {
 function operationRow(collection,item,manage=false) {
   const connection=byId('connections',item.connection);
   const steps=collection==='flows'? item.steps.map(id=>byId('commands',id)).filter(Boolean):[item];
-  const detail=[connection?.name,steps[0]?.user,item.type,collection==='flows'?`${item.steps.length} 步`:''].filter(Boolean).join(' · ');
+  const identity=item.switchTo ? `${item.user} → ${item.switchTo}` : steps[0]?.user;
+  const detail=[connection?.name,identity,item.type,collection==='flows'?`${item.steps.length} 步`:''].filter(Boolean).join(' · ');
   const actions=manage?[button('编辑',()=>openEditor(collection,item)),deleteButton('删除',collection,item.id)]:[];
   actions.push(button('执行',()=>askRun(collection,item)));
   return row(item.name,detail,actions);
@@ -61,6 +62,9 @@ function renderSidebar() {
     const history=active?.packet?.history || [];
     root.replaceChildren(...history.map(entry=>{
       const li=document.createElement('li'),code=document.createElement('code'); code.textContent=entry.script; li.append(code);
+      if(entry.switchTo) {
+        const note=document.createElement('p'); note.textContent=`已切换到 ${entry.switchTo}`; li.append(note);
+      }
       if(selectedConnection())li.append(button('保存为快捷指令',()=>openEditor('commands',{connection:active.meta.connection,user:entry.user,directory:entry.directory,script:entry.script})));
       return li;
     }));
@@ -71,7 +75,7 @@ function renderSidebar() {
   root.replaceChildren(...items.map(item=>operationRow(state.side,item)));
   message('#sidebar-empty',items.length?'':server?(state.side==='flows'?'这台服务器还没有自动化流程。':'这台服务器还没有快捷指令。'):'先选择服务器。');
   if(server && !items.length) {
-    const collection=state.side==='flows'&&byServer('commands',server.id).length?'flows':'commands';
+    const collection=state.side==='flows'&&byServer('commands',server.id).some(item=>!item.switchTo)?'flows':'commands';
     const item=document.createElement('li');
     item.append(button(collection==='flows'?'新建自动化流程':'新建快捷指令',()=>openEditor(collection,{connection:selectedConnection()?.id})));
     root.append(item);
@@ -87,7 +91,7 @@ function renderLibrary() {
     if(!items.length)$(target).append(row(collection==='flows'?'暂无自动化流程':'暂无快捷指令','',[]));
   }
   $('#new-command').disabled=!serverId;
-  $('#new-flow').disabled=!byServer('commands',serverId).length;
+  $('#new-flow').disabled=!byServer('commands',serverId).some(item=>!item.switchTo);
 }
 
 function renderLists() {
@@ -128,7 +132,7 @@ async function openTab(path,data) {
   message('#notice');
   const launched=await api(path,data);
   await workspace.refresh();
-  show('terminal'); workspace.choose(launched.id,true);
+  show('terminal'); workspace.focus(launched.id,true);
 }
 
 async function connect(id) {
@@ -175,7 +179,7 @@ async function askDelete(collection,id) {
 function showContext() {
   const connection=$('#edit-connection').value;
   const first=byId('commands',state.editor.steps[0]);
-  const choices=state.model.commands.filter(item=>item.connection===connection&&(!first||item.user===first.user));
+  const choices=state.model.commands.filter(item=>item.connection===connection&&!item.switchTo&&(!first||item.user===first.user));
   select($('#step-choice'),choices.map(item=>[item.id,`${item.name} · ${item.user}`]));
   $('#add-step').disabled=!choices.length;
 }
@@ -232,7 +236,7 @@ $$('[data-view]').forEach(node=>{node.onclick=()=>show(node.dataset.view);});
 $$('[data-side]').forEach(node=>{node.onclick=()=>{state.side=node.dataset.side;renderSidebar();};});
 $('#attach-form').onsubmit=event=>{event.preventDefault();void connect($('#terminal-connection').value);};
 $('#terminal-connection').onchange=renderSidebar;
-$('#toggle-split').onclick=()=>workspace.toggleSplit();
+$('#toggle-split').onclick=()=>workspace.toggleTiles();
 $('#library-server').onchange=renderLibrary;
 $('#new-command').onclick=()=>openEditor('commands');$('#new-flow').onclick=()=>openEditor('flows');
 $('#add-server').onclick=()=>openEditor('connections');

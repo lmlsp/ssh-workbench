@@ -3,9 +3,9 @@
 .terminal-toolbar { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; }
 .terminal-toolbar .connect-line { margin-bottom:0; }
 .terminal-desk { display:grid; grid-template-columns:minmax(0,1fr) minmax(230px,285px); gap:14px; align-items:start; }
-.terminal-stack,.terminal-slot { min-width:0; }
+.terminal-stack { min-width:0; }
 .terminal-panes { display:grid; grid-template-columns:minmax(0,1fr); gap:10px; }
-.terminal-panes.split { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.terminal-panes.tiled { grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr)); align-items:start; }
 .terminal-tabs { display:flex; gap:4px; overflow:auto; padding:0 2px 7px; }
 .terminal-tab { display:inline-flex; align-items:center; gap:3px; padding-right:3px; border-radius:8px; white-space:nowrap; }
 .terminal-tab-label { max-width:200px; text-overflow:ellipsis; overflow:hidden; }
@@ -13,12 +13,13 @@
 .terminal-tab-label.offline { color:#5c6b7f; }
 .tab-close { border-color:transparent; padding:3px 6px; background:transparent; }
 .terminal-placeholder { padding:30px 12px; background:#edf3fa; border:1px dashed #b8cbe2; border-radius:9px; text-align:center; margin:0; }
-.terminal-slot > button { margin-top:8px; }
 .terminal-card,.terminal-sidebar { border:1px solid var(--line); border-radius:11px; background:white; min-width:0; overflow:hidden; }
-.terminal-slot.focused .terminal-card { border-color:#81a9de; }
+.terminal-card.focused { border-color:#81a9de; }
 .terminal-heading { display:flex; padding:12px 14px; align-items:center; justify-content:space-between; gap:8px; }
+.terminal-heading .focus-pane,.terminal-heading .close-pane { padding:3px 7px; font-size:13px; }
 .terminal-heading p { margin:2px 0 0; font-size:13px; overflow-wrap:anywhere; }
 .xterm-host { height:clamp(310px,calc(100vh - 346px),700px); background:#132136; padding:10px; }
+.terminal-panes.tiled .xterm-host { height:clamp(220px,40vh,390px); }
 .xterm-host .xterm { height:100%; }
 .terminal-error { margin:0; padding:6px 12px; }
 .terminal-sidebar { padding:13px; }
@@ -58,4 +59,3 @@
 #parameter-labels label,#parameters-inputs label { display:grid; gap:4px; margin-bottom:4px; }
 #delete-items { overflow-wrap:anywhere; }
 @media(max-width:1050px) { .terminal-desk { grid-template-columns:1fr; } }
-@media(max-width:660px) { .terminal-panes.split { grid-template-columns:1fr; } }

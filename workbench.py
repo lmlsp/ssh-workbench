@@ -25,6 +25,9 @@ STORE = Store()
 SESSIONS = {}
 TERM_LOCK = threading.RLock()
 TERMS = {}
+MAX_TERMINALS = 12
+TERMINAL_EVENTS = threading.Condition()
+TERMINAL_REVISION = 0
 ASSETS = {
     '/': ('ssh.html', 'text/html; charset=utf-8'),
     '/ssh.js': ('ssh.js', 'text/javascript; charset=utf-8'),
@@ -35,6 +38,13 @@ ASSETS = {
     '/vendor/xterm.css': ('node_modules/@xterm/xterm/css/xterm.css', 'text/css; charset=utf-8'),
     '/vendor/fit.js': ('node_modules/@xterm/addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8'),
 }
+
+
+def terminal_changed():
+    global TERMINAL_REVISION
+    with TERMINAL_EVENTS:
+        TERMINAL_REVISION += 1
+        TERMINAL_EVENTS.notify_all()
 
 
 def open_terminal(data, run=False):
@@ -48,16 +58,50 @@ def open_terminal(data, run=False):
                 raise ValueError('这个连接已有自动任务，请先处理该任务')
         else:
             connection = match(STORE.current(), 'connections', data.get('connection'))
-        if sum(not t.closed for t in TERMS.values()) >= 12:
-            raise ValueError('终端已达到 12 个，请关掉不用的连接')
+        if sum(not t.closed for t in TERMS.values()) >= MAX_TERMINALS:
+            raise ValueError(f'终端已达到 {MAX_TERMINALS} 个，请关掉不用的连接')
         remaining = [t for t in TERMS.values() if t.closed]
         for old in remaining[:-12]:
             TERMS.pop(old.id, None)
-        term = Terminal(connection)
+        term = Terminal(connection, on_event=terminal_changed)
         TERMS[term.id] = term
         if run:
             term.begin(name, steps, password)
         return {'id': term.id}
+
+
+def terminal_events(data):
+    requested = data.get('terminals')
+    if not isinstance(requested, list) or not 1 <= len(requested) <= 2 * MAX_TERMINALS:
+        raise ValueError('请选择要显示的终端')
+    with TERM_LOCK:
+        watched, missing = [], []
+        for item in requested:
+            identifier, after = item.get('id'), item.get('after')
+            if not isinstance(identifier, str) or type(after) is not int or after < -1:
+                raise ValueError('无效的终端位置')
+            if identifier in TERMS:
+                watched.append((TERMS[identifier], after))
+            else:
+                missing.append(identifier)
+
+    def available():
+        packets = []
+        for term, after in watched:
+            with term.condition:
+                if term.revision > after:
+                    packets.append(term.events(after, False))
+        return packets
+
+    # Snapshot the global revision first, then check the individual sessions without that lock.
+    with TERMINAL_EVENTS:
+        observed = TERMINAL_REVISION
+    packets = available()
+    if not packets and not missing:
+        with TERMINAL_EVENTS:
+            TERMINAL_EVENTS.wait_for(lambda: TERMINAL_REVISION != observed, timeout=18)
+        packets = available()
+    return {'packets': packets, 'missing': missing}
 
 
 def delete_configuration(data, preview):
@@ -155,6 +199,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, terminal_list())
             elif post and path in ('/api/terminal', '/api/run'):
                 self.respond(201, open_terminal(data, run=(path == '/api/run')))
+            elif post and path == '/api/terminal-events':
+                self.respond(200, terminal_events(data))
             elif post and path == '/api/logs':
                 self.respond(200, follow(STORE.current(), data.get('sources')))
             elif post and path in ('/api/connections', '/api/apps', '/api/commands', '/api/flows'):

@@ -65,6 +65,21 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.save('flows', {'name': 'Mixed', 'connection': first['id'], 'steps': [a['id'], b['id']]})
 
+    def test_switch_shortcut_uses_literal_target_and_clears_password_when_target_changes(self):
+        node = self.connection('App', 'app.example')
+        switch = self.command(node, 'Switch account', script='su - "deploy"', password='example-only-password')
+        self.assertEqual(switch['switchTo'], 'deploy')
+        plan = self.store.plan('command', switch['id'], {})
+        self.assertEqual(plan[2][0]['switchTo'], 'deploy')
+        self.assertEqual(plan[2][0]['user'], 'appuser')
+        ordinary = self.command(node, 'Check', script='pwd')
+        with self.assertRaisesRegex(ValueError, '单独执行'):
+            self.store.save('flows', {'name': 'Invalid switch', 'connection': node['id'], 'steps': [switch['id'], ordinary['id']]})
+        changed = self.store.save('commands', dict(switch, script='su - maintenance'))
+        self.assertEqual(changed['switchTo'], 'maintenance')
+        self.assertFalse(changed['passwordSet'])
+        self.assertIsNone(catalog.switch_target('su - deploy\nls'))
+
     def test_server_groups_accounts_by_host_and_ssh_port(self):
         first = self.connection('App', 'APP.EXAMPLE')
         second = self.store.save('connections', dict(name='Alternate account', host='app.example.', port=22, user='appuser'))
