@@ -128,25 +128,36 @@ function show(view) {
   workspace.visible=view==='terminal'; workspace.layout();
 }
 
-async function openTab(path,data) {
-  message('#notice');
-  const launched=await api(path,data);
-  await workspace.refresh();
-  show('terminal'); workspace.focus(launched.id,true);
-}
-
 async function connect(id) {
-  try{await openTab('terminal',{connection:id});}
+  message('#notice');
+  try{
+    const opened=await api('terminal',{connection:id});
+    await workspace.refresh();
+    show('terminal'); workspace.focus(opened.id,true);
+  }
   catch(error){message('#notice',error.message);}
 }
 
+async function execute(data) {
+  message('#notice');
+  const result=await api('run',data);
+  show('terminal'); workspace.focus(result.id,true);
+}
+
 function askRun(collection,item) {
+  const panel=workspace.active();
+  if(!panel || panel.meta.closed) return message('#notice','请先选中一个已连接的 SSH 终端。');
+  if(panel.meta.connection!==item.connection){
+    const connection=byId('connections',item.connection);
+    return message('#notice',`请选择「${connection?.name || '对应 SSH 连接'}」的终端执行。`);
+  }
   const steps=collection==='flows'?item.steps.map(id=>byId('commands',id)).filter(Boolean):[item];
   const fields=Object.assign({},...steps.map(step=>step.params));
-  const data={kind:collection==='flows'?'flow':'command',id:item.id};
-  if(!Object.keys(fields).length){void openTab('run',{...data,params:{}}).catch(error=>message('#notice',error.message));return;}
+  const data={kind:collection==='flows'?'flow':'command',id:item.id,terminal:panel.meta.id};
+  if(!Object.keys(fields).length){void execute({...data,params:{}}).catch(error=>message('#notice',error.message));return;}
   state.parameters=data;
   $('#parameters-title').textContent=item.name;
+  $('#parameters-terminal').textContent=`在「${panel.meta.connectionName}」的选中终端执行`;
   $('#parameters-inputs').replaceChildren(...Object.entries(fields).map(([key,label])=>{
     const wrap=document.createElement('label'),input=document.createElement('input');
     wrap.textContent=label;input.name=key;input.required=true;input.maxLength=4000;wrap.append(input);return wrap;
@@ -282,7 +293,7 @@ $('#editor-form').onsubmit=async event=>{
 $('#cancel-run').onclick=()=>$('#parameters').close();
 $('#parameters-form').onsubmit=async event=>{
   event.preventDefault();const submit=$('button[type="submit"]',event.currentTarget);submit.disabled=true;
-  try{await openTab('run',{...state.parameters,params:Object.fromEntries(new FormData(event.currentTarget))});$('#parameters').close();}
+  try{await execute({...state.parameters,params:Object.fromEntries(new FormData(event.currentTarget))});$('#parameters').close();}
   catch(error){message('#parameters-error',error.message);}finally{submit.disabled=false;}
 };
 $('#cancel-delete').onclick=()=>$('#delete-dialog').close();

@@ -2,11 +2,14 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import auth
 import catalog
+import workbench
 
 
 class StoreTests(unittest.TestCase):
@@ -139,3 +142,40 @@ class ParameterTests(unittest.TestCase):
         for script in ('printf "%s" "{{value}}"', 'printf "%s" pre{{value}}'):
             with self.subTest(script=script), self.assertRaises(ValueError):
                 catalog.render(script, {'value': 'example'})
+
+
+class SelectedTerminalTests(unittest.TestCase):
+    def setUp(self):
+        self.connection = {'id':'saved-connection', 'name':'Application node', 'host':'app.example', 'port':22, 'user':'operator'}
+        self.steps = [{'script':'pwd', 'directory':'/srv/app', 'user':'operator'}]
+        self.terminal = SimpleNamespace(id='selected', connection=dict(self.connection), closed=False, ready=True,
+                                        context={'user':'operator'}, run=None, condition=threading.RLock(), begin=Mock())
+        self.terms={'selected':self.terminal}
+        self.addCleanup(patch.stopall)
+        patch.object(workbench, 'TERMS', self.terms).start()
+        patch.object(workbench.STORE, 'plan', return_value=('Inspect', self.connection, self.steps, None)).start()
+        self.new_terminal = patch.object(workbench, 'Terminal').start()
+
+    def test_run_keeps_selected_terminal(self):
+        result=workbench.execute_on_terminal({'kind':'flow','id':'example','terminal':'selected'})
+        self.assertEqual(result,{'id':'selected'})
+        self.terminal.begin.assert_called_once_with('Inspect',self.steps,None)
+        self.new_terminal.assert_not_called()
+        self.assertEqual(list(self.terms),['selected'])
+
+    def test_busy_terminal_or_changed_connection_rejected(self):
+        request={'kind':'command','id':'example','terminal':'selected'}
+        self.terminal.ready=False
+        with self.assertRaisesRegex(ValueError,'等待输入'):
+            workbench.execute_on_terminal(request)
+        self.terminal.ready=True
+        self.terminal.connection['host']='old.example'
+        with self.assertRaisesRegex(ValueError,'重新连接'):
+            workbench.execute_on_terminal(request)
+        self.terminal.begin.assert_not_called()
+        self.new_terminal.assert_not_called()
+
+    def test_run_without_selection_must_not_open_connection(self):
+        with self.assertRaisesRegex(ValueError,'先选中'):
+            workbench.execute_on_terminal({'kind':'flow','id':'example'})
+        self.new_terminal.assert_not_called()

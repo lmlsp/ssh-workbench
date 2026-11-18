@@ -47,17 +47,9 @@ def terminal_changed():
         TERMINAL_EVENTS.notify_all()
 
 
-def open_terminal(data, run=False):
+def open_terminal(data):
     with TERM_LOCK:
-        if run:
-            kind = data.get('kind')
-            if kind not in ('command', 'flow'):
-                raise ValueError('请选择快捷指令或流程')
-            name, connection, steps, password = STORE.plan(kind, data.get('id'), data.get('params') or {})
-            if any(not t.closed and t.run and t.run['phase'] in ACTIVE and t.connection['id'] == connection['id'] for t in TERMS.values()):
-                raise ValueError('这个连接已有自动任务，请先处理该任务')
-        else:
-            connection = match(STORE.current(), 'connections', data.get('connection'))
+        connection = match(STORE.current(), 'connections', data.get('connection'))
         if sum(not t.closed for t in TERMS.values()) >= MAX_TERMINALS:
             raise ValueError(f'终端已达到 {MAX_TERMINALS} 个，请关掉不用的连接')
         remaining = [t for t in TERMS.values() if t.closed]
@@ -65,9 +57,31 @@ def open_terminal(data, run=False):
             TERMS.pop(old.id, None)
         term = Terminal(connection, on_event=terminal_changed)
         TERMS[term.id] = term
-        if run:
-            term.begin(name, steps, password)
         return {'id': term.id}
+
+
+def execute_on_terminal(data):
+    with TERM_LOCK:
+        term = TERMS.get(data.get('terminal'))
+        if not term or term.closed:
+            raise ValueError('请先选中一个已连接的 SSH 终端')
+        kind = data.get('kind')
+        if kind not in ('command', 'flow'):
+            raise ValueError('请选择快捷指令或流程')
+        name, connection, steps, password = STORE.plan(kind, data.get('id'), data.get('params') or {})
+        with term.condition:
+            if term.closed:
+                raise ValueError('选中的 SSH 终端已断开')
+            if any(term.connection[key] != connection[key] for key in ('id', 'host', 'port', 'user')):
+                raise ValueError(f"请选择「{connection['name']}」的终端执行。连接配置已改动时，请重新连接。")
+            if any(not t.closed and t.run and t.run['phase'] in ACTIVE and t.connection['id'] == connection['id'] for t in TERMS.values()):
+                raise ValueError('这个连接已有自动任务，请先处理该任务')
+            if term.context is None:
+                raise ValueError('请先完成选中终端的 SSH 登录')
+            if not term.ready:
+                raise ValueError('选中的终端正在执行命令或等待输入，请等命令提示符出现后再执行')
+            term.begin(name, steps, password)
+            return {'id': term.id}
 
 
 def terminal_events(data):
@@ -197,8 +211,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, STORE.current())
             elif not post and path == '/api/terminals':
                 self.respond(200, terminal_list())
-            elif post and path in ('/api/terminal', '/api/run'):
-                self.respond(201, open_terminal(data, run=(path == '/api/run')))
+            elif post and path == '/api/terminal':
+                self.respond(201, open_terminal(data))
+            elif post and path == '/api/run':
+                self.respond(200, execute_on_terminal(data))
             elif post and path == '/api/terminal-events':
                 self.respond(200, terminal_events(data))
             elif post and path == '/api/logs':

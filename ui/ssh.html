@@ -32,7 +32,7 @@
     <p class="error" id="notice" role="alert" hidden></p>
 
     <section id="view-terminal" class="view">
-      <div class="page-heading"><div><h1>终端</h1><p>选择连接打开 SSH 终端，或在右侧运行自动化流程。</p></div><button data-view="servers">管理连接</button></div>
+      <div class="page-heading"><div><h1>终端</h1><p>拖动窗口右下角调节大小。快捷指令和流程在选中的终端运行。</p></div><button data-view="servers">管理连接</button></div>
       <div class="terminal-toolbar">
         <form id="attach-form" class="connect-line"><label for="terminal-connection">SSH 连接</label><select id="terminal-connection"></select><button class="primary" type="submit">添加窗口</button></form>
         <button type="button" id="toggle-split" aria-pressed="false" disabled>平铺窗口</button>
@@ -89,7 +89,7 @@
     <p class="error" id="editor-error" role="alert" hidden></p><div class="actions dialog-actions"><button type="button" id="cancel-edit">取消</button><button class="primary" type="submit" id="save">保存</button></div>
   </form></dialog>
 
-  <dialog id="parameters" class="editor-dialog"><form id="parameters-form"><h2 id="parameters-title"></h2><div id="parameters-inputs"></div><p class="error" id="parameters-error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-run" type="button">取消</button><button class="primary" type="submit">开始执行</button></div></form></dialog>
+  <dialog id="parameters" class="editor-dialog"><form id="parameters-form"><h2 id="parameters-title"></h2><p id="parameters-terminal"></p><div id="parameters-inputs"></div><p class="error" id="parameters-error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-run" type="button">取消</button><button class="primary" type="submit">开始执行</button></div></form></dialog>
 
   <dialog id="delete-dialog" class="editor-dialog"><form id="delete-form"><h2 id="delete-title"></h2><p id="delete-message"></p><ul id="delete-items"></ul><p id="delete-error" class="error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-delete" type="button">取消</button><button id="confirm-delete" type="submit" class="danger-fill">确认删除</button></div></form></dialog>
 
@@ -99,6 +99,7 @@
       <div class="actions run-controls"><button data-action="takeover">接管终端</button><button data-action="retry">重试本步</button><button data-action="next">本步已完成，继续</button><button data-action="end">结束流程</button></div>
     </div>
     <p class="error terminal-error" hidden></p><div class="xterm-host" aria-label="SSH 终端"></div>
+    <button type="button" class="resize-pane" aria-label="调整窗口宽高" title="拖动或用方向键调整，双击恢复默认"></button>
   </article></template>
 </body>
 </html>

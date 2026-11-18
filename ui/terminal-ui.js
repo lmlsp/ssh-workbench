@@ -18,6 +18,8 @@ class TerminalPanel {
     close.setAttribute('aria-label', `关闭窗口 ${meta.name}`);
     this.host.addEventListener('focusin', () => this.workspace.focus(this.meta.id));
     $$('[data-action]', this.node).forEach(node => { node.onclick = () => this.control(node.dataset.action); });
+    this.applySize();
+    this.bindResizeHandle();
   }
 
   get path() { return `terminal/${this.meta.id}`; }
@@ -32,13 +34,78 @@ class TerminalPanel {
     this.terminal.parser.registerOscHandler(52, () => true);
     this.terminal.onData(value => this.input(value));
     this.terminal.onResize(({cols,rows}) => {
-      if (!this.meta.closed) void api(`${this.path}/size`,{cols,rows}).catch(() => {});
+      clearTimeout(this.sizeTimer);
+      this.sizeTimer = setTimeout(() => {
+        if (!this.meta.closed) void api(`${this.path}/size`,{cols,rows}).catch(() => {});
+      }, 65);
     });
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(this.host);
   }
 
   resize() { if (this.host.offsetWidth) this.fit?.fit(); }
+
+  applySize() {
+    const size = this.workspace.sizes.get(this.meta.id) || {};
+    for (const axis of ['width','height']) {
+      const value = size[axis];
+      if (Number.isFinite(value) && value > 0) this.node.style.setProperty(`--terminal-${axis}`, `${value}px`);
+      else this.node.style.removeProperty(`--terminal-${axis}`);
+    }
+  }
+
+  setSize(width, height) {
+    const size = {...this.workspace.sizes.get(this.meta.id)};
+    const container = this.node.parentElement;
+    if (width !== undefined && container?.classList.contains('tiled')) {
+      const available = container.clientWidth;
+      size.width = Math.round(Math.max(Math.min(380, available), Math.min(width, available)));
+    }
+    if (height !== undefined) size.height = Math.round(Math.max(200, Math.min(height, 1400)));
+    this.workspace.sizes.set(this.meta.id,size);
+    this.applySize();
+  }
+
+  bindResizeHandle() {
+    const handle = $('.resize-pane',this.node);
+    const reset = () => {
+      this.workspace.sizes.delete(this.meta.id);
+      this.applySize();
+      this.workspace.persist();
+    };
+    let drag = null;
+    handle.onpointerdown = event => {
+      if (event.button!==0 || !event.isPrimary) return;
+      event.preventDefault();
+      handle.setPointerCapture(event.pointerId);
+      drag = {id:event.pointerId,x:event.clientX,y:event.clientY,width:this.node.getBoundingClientRect().width,height:this.host.offsetHeight};
+      this.node.classList.add('resizing');
+    };
+    handle.onpointermove = event => {
+      if (drag?.id!==event.pointerId) return;
+      const dx=event.clientX-drag.x,dy=event.clientY-drag.y;
+      this.setSize(dx ? drag.width+dx : undefined, dy ? drag.height+dy : undefined);
+    };
+    const finish = event => {
+      if (drag?.id!==event.pointerId) return;
+      drag=null;
+      this.node.classList.remove('resizing');
+      this.workspace.persist();
+    };
+    handle.onpointerup = finish;
+    handle.onpointercancel = finish;
+    handle.onlostpointercapture = finish;
+    handle.ondblclick = reset;
+    handle.onkeydown = event => {
+      const dimensions={ArrowLeft:[-40,0],ArrowRight:[40,0],ArrowUp:[0,-40],ArrowDown:[0,40]}[event.key];
+      if(!dimensions && event.key!=='Home')return;
+      event.preventDefault();
+      if(event.key==='Home')return reset();
+      const [dx,dy]=dimensions;
+      this.setSize(dx?this.node.offsetWidth+dx:undefined,dy?this.host.offsetHeight+dy:undefined);
+      this.workspace.persist();
+    };
+  }
 
   mount() {
     this.open();
@@ -47,6 +114,7 @@ class TerminalPanel {
 
   dispose() {
     clearTimeout(this.inputTimer);
+    clearTimeout(this.sizeTimer);
     this.observer?.disconnect();
     this.terminal?.dispose();
     this.node.remove();
@@ -133,10 +201,12 @@ class TerminalWorkspace {
     this.selected = null;
     this.tiled = true;
     this.visible = false;
+    this.sizes = new Map();
     try {
       const saved = JSON.parse(sessionStorage.getItem('terminalLayout'));
       this.selected = saved?.selected || saved?.slots?.[saved.focused] || null;
       this.tiled = saved?.mode !== 'single';
+      if(saved?.sizes) this.sizes=new Map(Object.entries(saved.sizes));
       this.dismissed = new Set(Array.isArray(saved?.dismissed) ? saved.dismissed : []);
     } catch (_) { this.dismissed = new Set(); }
   }
@@ -151,6 +221,7 @@ class TerminalWorkspace {
       else this.panels.set(entry.id,new TerminalPanel(entry,this));
     }
     this.dismissed=new Set([...this.dismissed].filter(id=>ids.has(id)));
+    for(const id of this.sizes.keys())if(!ids.has(id)||this.dismissed.has(id))this.sizes.delete(id);
     if (!this.panels.has(this.selected)) this.selected=this.panels.keys().next().value || null;
     this.layout();
   }
@@ -184,7 +255,7 @@ class TerminalWorkspace {
     root.hidden=this.panels.size===0;
     root.replaceChildren(...[...this.panels.values()].map(panel=>{
       const id=panel.meta.id, tab=document.createElement('span'); tab.className='terminal-tab';
-      const label=button(panel.meta.name,()=>this.focus(id,true));
+      const label=button(panel.meta.connectionName,()=>this.focus(id,true));
       label.className='terminal-tab-label'; label.title=panel.meta.connectionName;
       label.setAttribute('aria-pressed',String(this.active()===panel));
       if(panel.meta.closed) label.classList.add('offline');
@@ -241,6 +312,11 @@ class TerminalWorkspace {
     }
     this.watch(shown);
     this.drawTabs(); renderSidebar();
-    sessionStorage.setItem('terminalLayout',JSON.stringify({selected:this.selected,mode:this.tiled?'grid':'single',dismissed:[...this.dismissed]}));
+    this.persist();
+  }
+
+  persist() {
+    sessionStorage.setItem('terminalLayout',JSON.stringify({selected:this.selected,mode:this.tiled?'grid':'single',
+      dismissed:[...this.dismissed],sizes:Object.fromEntries(this.sizes)}));
   }
 }
