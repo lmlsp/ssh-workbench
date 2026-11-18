@@ -155,6 +155,11 @@ def public(item):
     return row
 
 
+def public_connection(item):
+    return {**{key:value for key,value in item.items() if key != 'secret'},
+            'server':server_id(item), 'passwordSet':bool(item.get('secret'))}
+
+
 class Store:
     def __init__(self):
         self.lock = threading.RLock()
@@ -166,7 +171,7 @@ class Store:
         with self.lock:
             state = self.read()
             state['servers'] = groups(state['connections'])
-            state['connections'] = [{**item, 'server': server_id(item)} for item in state['connections']]
+            state['connections'] = [public_connection(item) for item in state['connections']]
             state['commands'] = [public(item) for item in state['commands']]
             return state
 
@@ -225,7 +230,17 @@ class Store:
                 if not HOST.fullmatch(host) or not USER.fullmatch(user) or type(port) is not int or not 1 <= port <= 65535:
                     raise ValueError('SSH 主机、端口或用户格式不正确')
                 item.update(host=host, user=user, port=port)
-                if previous and any(previous[key] != item[key] for key in ('host', 'port', 'user')):
+                changed_endpoint = previous and any(previous[key] != item[key] for key in ('host', 'port', 'user'))
+                password = data.get('password')
+                if password is not None:
+                    if (not isinstance(password, str) or len(password.encode()) > 512
+                            or any(ord(char) < 32 for char in password)):
+                        raise ValueError('SSH 登录密码的格式不正确')
+                    if password:
+                        item['secret'] = seal(identifier, password)
+                elif previous.get('secret') and not changed_endpoint:
+                    item['secret'] = previous['secret']
+                if changed_endpoint:
                     for command in state['commands']:
                         if command['connection'] == identifier:
                             command.pop('secret', None)
@@ -289,6 +304,8 @@ class Store:
             if not previous:
                 state[collection].append(item)
             self.write(state)
+            if collection == 'connections':
+                return public_connection(item)
             return public(item) if collection == 'commands' else item
 
     def write(self, state):
@@ -332,3 +349,8 @@ class Store:
     def password(self, identifier):
         with self.lock:
             return unseal(match(self.read(), 'commands', identifier))
+
+    def login_connection(self, identifier):
+        with self.lock:
+            raw = match(self.read(), 'connections', identifier)
+            return public_connection(raw), unseal(raw)

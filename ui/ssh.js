@@ -5,6 +5,10 @@ const $$ = (selector, root=document) => Array.from(root.querySelectorAll(selecto
 const state = {view:'terminal', model:{servers:[],connections:[],commands:[],flows:[]}, editor:null, side:'flows'};
 const activePhases = ['connecting','switching','dispatch','running','between','paused'];
 const workspace = new TerminalWorkspace();
+const passwordControls={
+  commands:{input:'#edit-secret',toggle:'#toggle-secret',clear:'#clear-secret',endpoint:'password',hint:'需要 su 时可填写'},
+  connections:{input:'#edit-ssh-password',toggle:'#toggle-ssh-password',clear:'#clear-ssh-password',endpoint:'connection-password',hint:'使用 SSH 密钥时可留空'},
+};
 
 async function api(path,data,signal) {
   const options={signal};
@@ -118,7 +122,7 @@ function renderLists() {
     tools.append(button('添加登录账号',()=>openEditor('connections',{host:server.host,port:server.port})),deleteButton('删除服务器','servers',server.id));
     header.append(title,tools);
     const list=document.createElement('ul'); list.className='items';
-    list.append(...server.connections.map(id=>{const item=byId('connections',id); return row(item.name,item.user,[
+    list.append(...server.connections.map(id=>{const item=byId('connections',id); return row(item.name,item.passwordSet?`${item.user} · 已保存密码`:item.user,[
       button('连接',()=>connect(item.id)),button('编辑',()=>openEditor('connections',item)),deleteButton('删除连接','connections',item.id),
     ]);}));
     section.append(header,list); return section;
@@ -330,24 +334,27 @@ function openEditor(collection,item={}) {
     passwordSet:!!item.passwordSet,secretTouched:false};
   const defaultConnection=state.view==='library'?byId('servers',$('#library-server').value)?.connections[0]:selectedConnection()?.id;
   $('#editor-title').textContent=(item.id?'编辑':'新建')+(server?' SSH 连接':command?'快捷指令':'自动化流程');
-  $('#server-fields').hidden=!server;$('#context-fields').hidden=server;$('#command-fields').hidden=!command;$('#flow-fields').hidden=!flow;
+  $('#server-fields').hidden=!server;$('#ssh-password-fields').hidden=!server;$('#context-fields').hidden=server;$('#command-fields').hidden=!command;$('#flow-fields').hidden=!flow;
   $('#parameter-fields').hidden=true;
   select($('#edit-connection'),connectionOptions(),item.connection||defaultConnection||'');
   $('#edit-name').value=item.name||'';$('#edit-host').value=item.host||'';$('#edit-port').value=item.port||22;$('#edit-login-user').value=item.user||'';
   $('#edit-type').value=item.type||'';$('#edit-user').value=item.user||byId('connections',$('#edit-connection').value)?.user||'';
   $('#edit-directory').value=item.directory||'';$('#edit-script').value=item.script||'';
-  $('#edit-secret').value='';$('#edit-secret').type='password';$('#edit-secret').placeholder=item.passwordSet?'已保存，输入可更换':'需要 su 时可填写';
-  $('#toggle-secret').textContent='显示';$('#clear-secret').hidden=!item.passwordSet;
+  const fields=passwordControls[collection];
+  if(fields) {
+    const input=$(fields.input);input.value='';input.type='password';input.placeholder=item.passwordSet?'已保存，输入可更换':fields.hint;
+    $(fields.toggle).textContent='显示';$(fields.clear).hidden=!item.passwordSet;
+  }
   drawSteps();drawLabels();message('#editor-error');$('#editor').showModal();
 }
 
 function readEditor() {
   const editor=state.editor,value={id:editor.id,name:$('#edit-name').value};
+  if(editor.secretTouched)value.password=$(passwordControls[editor.collection].input).value;
   if(editor.collection==='connections')return {...value,host:$('#edit-host').value,port:Number($('#edit-port').value),user:$('#edit-login-user').value};
   value.connection=$('#edit-connection').value;
   value.app=value.connection===editor.connection?editor.app:'';value.type=$('#edit-type').value;
   if(editor.collection==='flows')return {...value,steps:editor.steps};
-  if(editor.secretTouched)value.password=$('#edit-secret').value;
   return {...value,script:$('#edit-script').value,user:$('#edit-user').value,directory:$('#edit-directory').value,params:editor.params};
 }
 
@@ -370,17 +377,24 @@ $('#edit-connection').onchange=()=>{
 };
 $('#add-step').onclick=()=>{const choice=$('#step-choice').value;if(choice&&state.editor.steps.length<24){state.editor.steps.push(choice);drawSteps();}};
 $('#cancel-edit').onclick=$('#editor-close').onclick=()=>$('#editor').close();
-$('#editor').addEventListener('close',()=>{$('#edit-secret').value='';state.editor=null;});
-$('#edit-secret').oninput=()=>{state.editor.secretTouched=true;};
-$('#clear-secret').onclick=()=>{$('#edit-secret').value='';$('#edit-secret').placeholder='保存后清除密码';state.editor.secretTouched=true;};
-$('#toggle-secret').onclick=async()=>{
-  const field=$('#edit-secret'),toggle=$('#toggle-secret');
-  if(field.type==='text'){field.type='password';toggle.textContent='显示';return;}
-  try {
-    if(!field.value&&state.editor.passwordSet&&!state.editor.secretTouched){const {password}=await api('password',{id:state.editor.id});field.value=password||'';}
-    field.type='text';toggle.textContent='隐藏';
-  }catch(error){message('#editor-error',error.message);}
-};
+$('#editor').addEventListener('close',()=>{Object.values(passwordControls).forEach(fields=>{$(fields.input).value='';});state.editor=null;});
+for(const fields of Object.values(passwordControls)){
+  const field=$(fields.input),toggle=$(fields.toggle);
+  field.oninput=()=>{state.editor.secretTouched=true;};
+  $(fields.clear).onclick=()=>{field.value='';field.placeholder='保存后清除密码';state.editor.secretTouched=true;};
+  toggle.onclick=async()=>{
+    if(field.type==='text'){field.type='password';toggle.textContent='显示';return;}
+    const editing=state.editor;
+    try {
+      if(!field.value&&editing.passwordSet&&!editing.secretTouched){
+        const {password}=await api(fields.endpoint,{id:editing.id});
+        if(state.editor!==editing || editing.secretTouched)return;
+        field.value=password||'';
+      }
+      field.type='text';toggle.textContent='隐藏';
+    }catch(error){message('#editor-error',error.message);}
+  };
+}
 $('#edit-script').oninput=drawLabels;
 $('#mark-parameter').onclick=()=>{
   const input=$('#edit-script');let start=input.selectionStart,end=input.selectionEnd;

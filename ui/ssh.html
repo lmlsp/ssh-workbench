@@ -86,6 +86,10 @@
     <div id="server-fields" class="form-row" hidden>
       <label>主机<input id="edit-host" placeholder="IP 地址或域名"></label><label>端口<input id="edit-port" type="number" min="1" max="65535" value="22"></label><label>SSH 登录用户<input id="edit-login-user"></label>
     </div>
+    <div id="ssh-password-fields" hidden>
+      <label for="edit-ssh-password">SSH 登录密码（选填）</label>
+      <div class="actions secret-line"><input id="edit-ssh-password" type="password" autocomplete="off"><button id="toggle-ssh-password" type="button">显示</button><button id="clear-ssh-password" type="button" hidden>清除密码</button></div>
+    </div>
     <div class="form-row" id="context-fields"><label>SSH 连接<select id="edit-connection"></select></label><label>类型（选填）<input id="edit-type" list="types" placeholder="如更新、检查、排查" maxlength="24"></label></div>
     <datalist id="types"><option value="更新"></option><option value="检查"></option><option value="排查"></option><option value="恢复"></option></datalist>
     <div id="command-fields" hidden>

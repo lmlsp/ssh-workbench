@@ -18,6 +18,7 @@ import threading
 import time
 
 from settings import DATA, ROOT
+from ssh_login import PasswordTicket
 
 BOOT = base64.b64encode((ROOT / 'shell-integration.sh').read_bytes()).decode()
 ESC = b'\x1b]777;OW:'
@@ -41,7 +42,7 @@ def pack(fields):
 
 
 class Terminal:
-    def __init__(self, connection, on_close=None, on_event=None):
+    def __init__(self, connection, on_close=None, on_event=None, login_password=None):
         self.id = secrets.token_urlsafe(16)
         self.nonce = secrets.token_hex(18)
         self.connection = dict(connection)
@@ -62,16 +63,30 @@ class Terminal:
         self.prompt = b''
         self.signature = ESC + self.nonce.encode() + b':'
         self.secret_consumed = False
+        self.login_ticket = None
         self.fd, slave = os.openpty()
         remote = 'exec /bin/bash --rcfile <(printf %s "$OW_BOOT" | base64 -d) -i'
         launcher = f'OW_BOOT={BOOT} OW_NONCE={self.nonce} exec /bin/bash -c {shlex.quote(remote)}'
         try:
             self.resize(120, 32)
-            self.process = subprocess.Popen([sys.executable, str(ROOT / 'pty-child.py'), *ssh_args(connection, True), launcher],
+            args = ssh_args(connection, True)
+            env = {**os.environ, 'TERM':'xterm-256color'}
+            if login_password:
+                self.login_ticket = PasswordTicket(connection['user'], login_password)
+                # Without a controlling TTY, even older OpenSSH invokes SSH_ASKPASS for authentication.
+                env.update(DISPLAY=':0', SSH_ASKPASS=str(ROOT/'ssh-askpass.py'), SSH_ASKPASS_REQUIRE='force',
+                           WORKBENCH_SSH_PTY=os.ttyname(slave), WORKBENCH_SSH_USER=connection['user'],
+                           WORKBENCH_SSH_TICKET=self.login_ticket.path)
+                args[2:2] = ['-o','ForwardX11=no','-o','NumberOfPasswordPrompts=1']
+            else:
+                args = [sys.executable, str(ROOT/'pty-child.py'), *args]
+            self.process = subprocess.Popen([*args, launcher],
                                             stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
-                                            env={**os.environ, 'TERM': 'xterm-256color'})
+                                            env=env)
         except BaseException:
             os.close(self.fd)
+            if self.login_ticket:
+                self.login_ticket.close()
             raise
         finally:
             os.close(slave)
@@ -79,6 +94,8 @@ class Terminal:
 
     def resize(self, cols, rows):
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+        if hasattr(self, 'process'):
+            self.process.send_signal(signal.SIGWINCH)
 
     def write(self, data):
         if self.closed:
@@ -131,6 +148,8 @@ class Terminal:
                     self.run['password'] = None
                     self.run['message'] = 'SSH 已断开，当前步骤结果需在服务器核对。'
                 self.changed()
+            if self.login_ticket:
+                self.login_ticket.close()
             try:
                 os.close(self.fd)
             except OSError:
@@ -187,6 +206,9 @@ class Terminal:
             if self.run and self.run['phase'] == 'switching' and self.run['switchingTo'] == target:
                 self.run['switchAcknowledged'] = True
         elif event == 'P' and len(values) == 2:
+            if self.login_ticket:
+                self.login_ticket.close()
+                self.login_ticket = None
             self.context = {'user': values[0], 'directory': values[1]}
             self.ready = True
             self.changed()

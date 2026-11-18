@@ -50,6 +50,19 @@ class StoreTests(unittest.TestCase):
         self.store.save('connections', dict(connection, host='replacement.example'))
         self.assertIsNone(self.store.password(command['id']))
 
+    def test_saved_ssh_login_password_is_private_and_bound_to_endpoint(self):
+        connection = self.store.save('connections', {'name':'Node', 'host':'app.example', 'port':22,
+                                                      'user':'operator', 'password':'test-login-value'})
+        self.assertTrue(connection['passwordSet'])
+        self.assertNotIn('secret', connection)
+        self.assertNotIn('test-login-value', catalog.STATE.read_text())
+        self.assertEqual(self.store.login_connection(connection['id'])[1], 'test-login-value')
+        renamed = self.store.save('connections', dict(connection, name='Renamed node'))
+        self.assertTrue(renamed['passwordSet'])
+        migrated = self.store.save('connections', dict(renamed, port=2222))
+        self.assertFalse(migrated['passwordSet'])
+        self.assertIsNone(self.store.login_connection(connection['id'])[1])
+
     def test_workflow_reads_latest_command_and_keeps_run_snapshot(self):
         node = self.connection('App', 'app.example')
         first = self.command(node, 'Inspect')

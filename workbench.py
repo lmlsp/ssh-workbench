@@ -49,13 +49,13 @@ def terminal_changed():
 
 def open_terminal(data):
     with TERM_LOCK:
-        connection = match(STORE.current(), 'connections', data.get('connection'))
+        connection, password = STORE.login_connection(data.get('connection'))
         if sum(not t.closed for t in TERMS.values()) >= MAX_TERMINALS:
             raise ValueError(f'终端已达到 {MAX_TERMINALS} 个，请关掉不用的连接')
         remaining = [t for t in TERMS.values() if t.closed]
         for old in remaining[:-12]:
             TERMS.pop(old.id, None)
-        term = Terminal(connection, on_event=terminal_changed)
+        term = Terminal(connection, on_event=terminal_changed, login_password=password)
         TERMS[term.id] = term
         return {'id': term.id}
 
@@ -225,6 +225,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, delete_configuration(data, preview=path.endswith('preview')))
             elif post and path == '/api/password':
                 self.respond(200, {'password': STORE.password(data.get('id'))})
+            elif post and path == '/api/connection-password':
+                _, password = STORE.login_connection(data.get('id'))
+                self.respond(200, {'password':password})
             elif re.fullmatch(r'/api/terminal/[A-Za-z0-9_-]{20,28}/(events|input|size|control|close)', path):
                 _, _, _, identifier, operation = path.split('/')
                 with TERM_LOCK:
