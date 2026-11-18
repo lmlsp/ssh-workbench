@@ -1,6 +1,8 @@
 """Saved SSH connections, shortcut commands, flows, and application log sources."""
 
 import base64
+from hashlib import sha256
+import ipaddress
 import json
 import os
 import re
@@ -18,6 +20,27 @@ KEY = DATA / 'workbench.key'
 USER = re.compile(r'[a-zA-Z_][a-zA-Z0-9_.-]{0,63}\$?')
 HOST = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9.:-]{0,251}')
 PARAM = re.compile(r'\{\{([a-zA-Z][a-zA-Z0-9_]{0,31})\}\}')
+DELETABLE = ('servers', 'connections', 'commands', 'flows')
+
+
+def server_id(connection):
+    host = connection['host'].lower().rstrip('.')
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    endpoint = json.dumps([host, connection['port']])
+    return sha256(endpoint.encode()).hexdigest()[:32]
+
+
+def groups(connections):
+    result = {}
+    for connection in connections:
+        identifier = server_id(connection)
+        group = result.setdefault(identifier, {'id': identifier, 'name': connection['name'],
+                                                'host': connection['host'], 'port': connection['port'], 'connections': []})
+        group['connections'].append(connection['id'])
+    return list(result.values())
 
 
 def initial():
@@ -124,8 +147,51 @@ class Store:
     def current(self):
         with self.lock:
             state = self.read()
+            state['servers'] = groups(state['connections'])
+            state['connections'] = [{**item, 'server': server_id(item)} for item in state['connections']]
             state['commands'] = [public(item) for item in state['commands']]
             return state
+
+    def deletion(self, collection, identifier, fingerprint=None, active_connections=()):
+        """Preview or apply an atomic deletion, including only the dependencies shown."""
+        if collection not in DELETABLE:
+            raise ValueError('请选择要删除的服务器、连接、快捷指令或流程')
+        with self.lock:
+            state = self.read()
+            target = match({**state, 'servers': groups(state['connections'])}, collection, identifier)
+            if collection == 'connections':
+                connections = {identifier}
+            elif collection == 'servers':
+                connections = set(target['connections'])
+            else:
+                connections = set()
+            impacted = {kind: [] for kind in ('connections', 'commands', 'flows', 'apps')}
+            for kind in impacted:
+                impacted[kind] = [item for item in state[kind] if (
+                    kind == collection and item['id'] == identifier or
+                    (item['id'] if kind == 'connections' else item['connection']) in connections)]
+            command_ids = {item['id'] for item in impacted['commands']}
+            removed_flows = {item['id'] for item in impacted['flows']}
+            references = [item['name'] for item in state['flows']
+                          if item['id'] not in removed_flows and command_ids.intersection(item['steps'])]
+            busy = bool(connections.intersection(active_connections))
+            token = sha256(json.dumps([target, impacted], sort_keys=True).encode()).hexdigest()
+            summary = {'name': target['name'], 'references': references, 'busy': busy, 'fingerprint': token,
+                       'items': {kind: [{'id': item['id'], 'name': item['name']} for item in rows]
+                                 for kind, rows in impacted.items()}}
+            if fingerprint is None:
+                return summary
+            if token != fingerprint:
+                raise ValueError('关联配置已变化，请重新查看需要删除的内容')
+            if references:
+                raise ValueError('请先修改引用该指令的流程：' + '、'.join(references))
+            if busy:
+                raise ValueError('还有终端任务在运行或等待输入，请先处理完再删除')
+            for kind, rows in impacted.items():
+                removed = {item['id'] for item in rows}
+                state[kind] = [item for item in state[kind] if item['id'] not in removed]
+            self.write(state)
+            return summary
 
     def save(self, collection, data):
         with self.lock:
@@ -178,6 +244,13 @@ class Store:
                     params = {value: clean(labels, value, 40, False) or value for value in dict.fromkeys(PARAM.findall(script))}
                     render(script, dict.fromkeys(params, 'test parameter'))
                     item.update(user=user, directory=directory, script=script, params=params)
+                    if previous and (previous['connection'], previous['user']) != (connection, user):
+                        for flow in state['flows']:
+                            if identifier not in flow['steps']:
+                                continue
+                            peers = [match(state, 'commands', step) for step in flow['steps'] if step != identifier]
+                            if flow['connection'] != connection or any(step['user'] != user for step in peers):
+                                raise ValueError(f'请先从「{flow["name"]}」移除这条指令，再修改连接或执行用户')
                     password = data.get('password')
                     if password is not None:
                         if not isinstance(password, str) or len(password) > 500 or any(ord(x) < 32 for x in password):

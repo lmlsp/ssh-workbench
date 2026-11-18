@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/ssh.css">
   <script src="/vendor/xterm.js" defer></script>
   <script src="/vendor/fit.js" defer></script>
+  <script src="/terminal-ui.js" defer></script>
   <script src="/ssh.js" defer></script>
 </head>
 <body>
@@ -25,47 +26,49 @@
   <main class="workspace" id="workspace" hidden>
     <nav class="navigation" aria-label="工作台">
       <button data-view="terminal" aria-current="page">终端</button>
-      <button data-view="logs">看日志</button>
       <button data-view="library">快捷指令与流程</button>
       <button data-view="servers">服务器</button>
     </nav>
     <p class="error" id="notice" role="alert" hidden></p>
 
     <section id="view-terminal" class="view">
-      <div class="page-heading"><div><h1>终端</h1><p>连接服务器，常用命令可从右侧保存为快捷指令。</p></div><button data-view="servers">管理连接</button></div>
-      <form id="attach-form" class="connect-line"><label for="terminal-connection">服务器连接</label><select id="terminal-connection"></select><button class="primary" type="submit">连接</button><label for="switch-session">已打开终端</label><select id="switch-session"></select></form>
+      <div class="page-heading"><div><h1>终端</h1><p>选择连接打开 SSH 终端，或在右侧运行自动化流程。</p></div><button data-view="servers">管理连接</button></div>
+      <div class="terminal-toolbar">
+        <form id="attach-form" class="connect-line"><label for="terminal-connection">SSH 连接</label><select id="terminal-connection"></select><button class="primary" type="submit">新建终端</button></form>
+        <button type="button" id="toggle-split" aria-pressed="false" disabled>左右分屏</button>
+      </div>
       <p id="terminal-empty" hidden>先在「服务器」添加一个 SSH 连接。</p>
-      <div id="terminal-main"></div>
-    </section>
-
-    <section id="view-logs" class="view" hidden>
-      <div class="page-heading"><div><h1>看日志</h1><p>每个窗口独立选择服务器上的应用和日志来源。</p></div><button id="add-log">＋ 添加窗口</button></div>
-      <p id="logs-empty" hidden>先在「服务器」添加一个应用及其日志文件。</p>
-      <div id="logs-layout" class="logs-layout"><div id="logs-grid" class="log-grid"></div><div id="logs-terminal" hidden></div></div>
+      <div class="terminal-desk">
+        <div class="terminal-stack">
+          <div id="terminal-tabs" class="terminal-tabs" aria-label="已打开终端" role="group"></div>
+          <div id="terminal-main" class="terminal-panes">
+            <section class="terminal-slot" data-slot="0" aria-label="左侧终端"></section>
+            <section class="terminal-slot" data-slot="1" aria-label="右侧终端" hidden></section>
+          </div>
+        </div>
+        <aside class="terminal-sidebar">
+          <h2 id="sidebar-title">当前服务器</h2><p class="sidebar-endpoint" id="sidebar-endpoint"></p>
+          <div class="sidebar-modes" aria-label="当前服务器面板" role="group">
+            <button type="button" data-side="flows" aria-pressed="true">自动化流程</button>
+            <button type="button" data-side="commands" aria-pressed="false">快捷指令</button>
+            <button type="button" data-side="history" aria-pressed="false">执行记录</button>
+          </div>
+          <p id="sidebar-empty" class="sidebar-empty" hidden></p><ul id="sidebar-items" class="sidebar-items"></ul>
+        </aside>
+      </div>
     </section>
 
     <section id="view-library" class="view" hidden>
-      <div class="page-heading"><div><h1>快捷指令与流程</h1><p>直接写命令，或把已保存的指令排成一个流程。</p></div><div class="actions"><button id="new-command">新建快捷指令</button><button class="primary" id="new-flow">新建流程</button></div></div>
+      <div class="page-heading"><div><h1>快捷指令与流程</h1><p>按服务器管理快捷指令和自动化流程。</p></div><div class="actions"><button id="new-command">新建快捷指令</button><button class="primary" id="new-flow">新建自动化流程</button></div></div>
+      <div class="connect-line"><label for="library-server">服务器</label><select id="library-server"></select></div>
       <div class="library-lists"><section><h2>流程</h2><ul class="items" id="flow-list"></ul></section><section><h2>快捷指令</h2><ul class="items" id="command-list"></ul></section></div>
     </section>
 
     <section id="view-servers" class="view" hidden>
-      <div class="page-heading"><div><h1>服务器</h1><p>保存 SSH 连接，也可以在同一台服务器上保存不同的登录用户。</p></div><div class="actions"><button id="add-app">添加应用日志</button><button class="primary" id="add-server">添加 SSH 连接</button></div></div>
+      <div class="page-heading"><div><h1>服务器</h1><p>同一主机和 SSH 端口下，可以保存多个登录账号。</p></div><button class="primary" id="add-server">添加 SSH 连接</button></div>
       <p id="servers-empty" hidden>还没有连接。添加第一条 SSH 连接后就可以打开终端。</p>
-      <div class="library-lists"><section><h2>SSH 连接</h2><ul class="items" id="server-list"></ul></section><section><h2>应用日志</h2><ul class="items" id="app-list"></ul></section></div>
+      <div id="server-list" class="server-groups"></div>
     </section>
-
-    <div id="terminal-region" class="terminal-region" hidden>
-      <div class="terminal-card">
-        <div class="terminal-heading"><div><strong id="term-name">未连接</strong><p id="term-context">选择一个连接开始。</p></div><button id="close-terminal" hidden>断开</button></div>
-        <div class="run-info" id="run-info" hidden>
-          <p id="run-message" role="status"></p><ol id="run-steps"></ol>
-          <div class="actions" id="run-controls"><button data-action="takeover">接管终端</button><button data-action="retry">重试本步</button><button data-action="next">本步已完成，继续</button><button data-action="end">结束流程</button></div>
-        </div>
-        <p class="error terminal-error" id="terminal-error" hidden></p><div id="xterm" aria-label="SSH 终端"></div>
-      </div>
-      <aside class="command-history"><h2>执行过的命令</h2><p id="history-empty">终端返回提示符后，命令会出现在这里。</p><ol id="history-list"></ol></aside>
-    </div>
   </main>
 
   <dialog id="editor" class="editor-dialog"><form id="editor-form">
@@ -74,9 +77,8 @@
     <div id="server-fields" class="form-row" hidden>
       <label>主机<input id="edit-host" placeholder="IP 地址或域名"></label><label>端口<input id="edit-port" type="number" min="1" max="65535" value="22"></label><label>SSH 登录用户<input id="edit-login-user"></label>
     </div>
-    <div class="form-row" id="context-fields"><label>服务器连接<select id="edit-connection"></select></label><label id="app-field">关联应用（选填）<select id="edit-app"></select></label><label id="type-field">类型（选填）<input id="edit-type" list="types" placeholder="如更新、检查、排查" maxlength="24"></label></div>
+    <div class="form-row" id="context-fields"><label>SSH 连接<select id="edit-connection"></select></label><label>类型（选填）<input id="edit-type" list="types" placeholder="如更新、检查、排查" maxlength="24"></label></div>
     <datalist id="types"><option value="更新"></option><option value="检查"></option><option value="排查"></option><option value="恢复"></option></datalist>
-    <div id="app-fields" hidden><label>日志文件</label><div id="edit-sources"></div><button type="button" id="add-source">＋ 日志来源</button></div>
     <div id="command-fields" hidden>
       <div class="form-row"><label>执行用户<input id="edit-user" placeholder="例如 appuser"></label><label>工作目录<input id="edit-directory" placeholder="/srv/myapp"></label></div>
       <label for="edit-script">命令</label><textarea id="edit-script" rows="5" spellcheck="false" placeholder="输入要在远程终端执行的命令"></textarea>
@@ -91,10 +93,14 @@
 
   <dialog id="parameters" class="editor-dialog"><form id="parameters-form"><h2 id="parameters-title"></h2><div id="parameters-inputs"></div><p class="error" id="parameters-error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-run" type="button">取消</button><button class="primary" type="submit">开始执行</button></div></form></dialog>
 
-  <template id="log-template"><article class="log-pane">
-    <div class="pane-controls"><label><span class="visually-hidden">应用</span><select class="log-app"></select></label><label><span class="visually-hidden">日志来源</span><select class="log-source"></select></label><div class="pane-actions"><button class="quick" type="button" aria-expanded="false">快捷执行</button><button class="pause" type="button">暂停</button><button class="remove" type="button" aria-label="关闭日志窗口">×</button></div></div>
-    <div class="quick-menu" hidden><label>类型<select class="quick-filter"></select></label><ul class="items quick-list"></ul><p class="quick-empty" hidden>这个应用暂无快捷操作。</p></div>
-    <pre class="log-text" tabindex="0" aria-label="应用日志正文"></pre><p class="pane-status" role="status">正在读取</p>
+  <dialog id="delete-dialog" class="editor-dialog"><form id="delete-form"><h2 id="delete-title"></h2><p id="delete-message"></p><ul id="delete-items"></ul><p id="delete-error" class="error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-delete" type="button">取消</button><button id="confirm-delete" type="submit" class="danger-fill">确认删除</button></div></form></dialog>
+
+  <template id="terminal-template"><article class="terminal-card">
+    <div class="terminal-heading"><div><strong class="term-name"></strong><p class="term-context">正在连接…</p></div><button type="button" class="focus-pane">选中此终端</button></div>
+    <div class="run-info" hidden><p class="run-message" role="status"></p><ol class="run-steps"></ol>
+      <div class="actions run-controls"><button data-action="takeover">接管终端</button><button data-action="retry">重试本步</button><button data-action="next">本步已完成，继续</button><button data-action="end">结束流程</button></div>
+    </div>
+    <p class="error terminal-error" hidden></p><div class="xterm-host" aria-label="SSH 终端"></div>
   </article></template>
 </body>
 </html>

@@ -65,6 +65,53 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.save('flows', {'name': 'Mixed', 'connection': first['id'], 'steps': [a['id'], b['id']]})
 
+    def test_server_groups_accounts_by_host_and_ssh_port(self):
+        first = self.connection('App', 'APP.EXAMPLE')
+        second = self.store.save('connections', dict(name='Alternate account', host='app.example.', port=22, user='appuser'))
+        other = self.store.save('connections', dict(name='Alternate port', host='app.example', port=2222, user='operator'))
+        model = self.store.current()
+        self.assertEqual([server['connections'] for server in model['servers']], [[first['id'], second['id']], [other['id']]])
+
+    def test_command_deletion_checks_flows_and_flow_deletion_keeps_commands(self):
+        node = self.connection('App', 'app.example')
+        a = self.command(node, 'Inspect', script='pwd')
+        b = self.command(node, 'Check', script='id')
+        flow = self.store.save('flows', {'name': 'Inspect and check', 'connection': node['id'], 'steps': [a['id'], b['id']]})
+        preview = self.store.deletion('commands', a['id'])
+        self.assertEqual(preview['references'], [flow['name']])
+        with self.assertRaisesRegex(ValueError, flow['name']):
+            self.store.deletion('commands', a['id'], preview['fingerprint'])
+        preview = self.store.deletion('flows', flow['id'])
+        self.store.deletion('flows', flow['id'], preview['fingerprint'])
+        self.assertEqual(len(self.store.current()['commands']), 2)
+        preview = self.store.deletion('commands', a['id'])
+        self.store.deletion('commands', a['id'], preview['fingerprint'])
+        self.assertEqual([row['id'] for row in self.store.current()['commands']], [b['id']])
+
+    def test_server_deletion_is_atomic_scoped_and_rechecks_preview_and_busy_state(self):
+        first = self.connection('App', 'app.example')
+        second = self.connection('Another account', 'app.example')
+        other = self.connection('Separate', 'separate.example')
+        self.command(first, 'A', script='pwd')
+        command = self.command(second, 'B', script='id')
+        self.store.save('flows', {'name': 'Check twice', 'connection': second['id'], 'steps': [command['id']]*2})
+        self.store.save('apps', {'name': 'Legacy', 'connection': second['id'], 'sources': [{'name':'Log','path':'/srv/example/app.log'}]})
+        self.command(other, 'Keep', script='pwd')
+        target = catalog.server_id(first)
+        preview = self.store.deletion('servers', target)
+        self.assertEqual({kind:len(rows) for kind,rows in preview['items'].items()}, {'connections':2, 'commands':2, 'flows':1, 'apps':1})
+        with self.assertRaisesRegex(ValueError, '运行'):
+            self.store.deletion('servers', target, preview['fingerprint'], [second['id']])
+        self.command(first, 'New dependency', script='pwd')
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            self.store.deletion('servers', target, preview['fingerprint'])
+        preview = self.store.deletion('servers', target)
+        self.store.deletion('servers', target, preview['fingerprint'])
+        state = self.store.current()
+        self.assertEqual([c['id'] for c in state['connections']], [other['id']])
+        self.assertEqual([c['name'] for c in state['commands']], ['Keep'])
+        self.assertFalse(state['flows'] or state['apps'])
+
 
 class ParameterTests(unittest.TestCase):
     def test_parameter_does_not_add_shell_commands(self):

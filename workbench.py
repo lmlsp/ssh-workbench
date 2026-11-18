@@ -12,7 +12,7 @@ import threading
 import time
 from urllib.parse import parse_qs, urlsplit
 
-from catalog import Store, match
+from catalog import Store, match, server_id
 from auth import AUTH, set_password, verify
 from multi_logs import follow
 from settings import PORT, ROOT, setup_data
@@ -28,6 +28,7 @@ TERMS = {}
 ASSETS = {
     '/': ('ssh.html', 'text/html; charset=utf-8'),
     '/ssh.js': ('ssh.js', 'text/javascript; charset=utf-8'),
+    '/terminal-ui.js': ('terminal-ui.js', 'text/javascript; charset=utf-8'),
     '/style.css': ('style.css', 'text/css; charset=utf-8'),
     '/ssh.css': ('ssh.css', 'text/css; charset=utf-8'),
     '/vendor/xterm.js': ('node_modules/@xterm/xterm/lib/xterm.js', 'text/javascript; charset=utf-8'),
@@ -45,13 +46,6 @@ def open_terminal(data, run=False):
             name, connection, steps, password = STORE.plan(kind, data.get('id'), data.get('params') or {})
             if any(not t.closed and t.run and t.run['phase'] in ACTIVE and t.connection['id'] == connection['id'] for t in TERMS.values()):
                 raise ValueError('这个连接已有自动任务，请先处理该任务')
-            current = TERMS.get(data.get('terminal'))
-            if current:
-                with current.condition:
-                    if (not current.closed and current.ready and current.connection == connection
-                            and current.context.get('user') == steps[0]['user']):
-                        current.begin(name, steps, password)
-                        return {'id': current.id}
         else:
             connection = match(STORE.current(), 'connections', data.get('connection'))
         if sum(not t.closed for t in TERMS.values()) >= 12:
@@ -64,6 +58,33 @@ def open_terminal(data, run=False):
         if run:
             term.begin(name, steps, password)
         return {'id': term.id}
+
+
+def delete_configuration(data, preview):
+    with TERM_LOCK:
+        active = set()
+        for term in TERMS.values():
+            with term.condition:
+                managed = term.run and term.run['phase'] in ACTIVE
+                manual = term.context is not None and not term.ready
+                if not term.closed and (managed or manual):
+                    active.add(term.connection['id'])
+        fingerprint = None if preview else data.get('fingerprint')
+        if not preview and (not isinstance(fingerprint, str) or not re.fullmatch(r'[a-f0-9]{64}', fingerprint)):
+            raise ValueError('请先查看需要删除的内容')
+        return STORE.deletion(data.get('collection'), data.get('id'), fingerprint, active)
+
+
+def terminal_list():
+    entries = []
+    with TERM_LOCK:
+        for term in TERMS.values():
+            with term.condition:
+                entries.append({'id': term.id, 'connection': term.connection['id'], 'server': server_id(term.connection),
+                                'closed': term.closed, 'active': not term.closed and bool(term.run and term.run['phase'] in ACTIVE),
+                                'name': term.run['name'] if term.run else term.connection['name'],
+                                'connectionName': term.connection['name']})
+    return entries
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -131,15 +152,15 @@ class Handler(BaseHTTPRequestHandler):
             if not post and path == '/api/state':
                 self.respond(200, STORE.current())
             elif not post and path == '/api/terminals':
-                with TERM_LOCK:
-                    self.respond(200, [{'id': t.id, 'connection': t.connection['id'], 'closed': t.closed,
-                                        'name': t.run['name'] if t.run else t.connection['name']} for t in TERMS.values()])
+                self.respond(200, terminal_list())
             elif post and path in ('/api/terminal', '/api/run'):
                 self.respond(201, open_terminal(data, run=(path == '/api/run')))
             elif post and path == '/api/logs':
                 self.respond(200, follow(STORE.current(), data.get('sources')))
             elif post and path in ('/api/connections', '/api/apps', '/api/commands', '/api/flows'):
                 self.respond(200, STORE.save(path.rsplit('/', 1)[1], data))
+            elif post and path in ('/api/delete-preview', '/api/delete'):
+                self.respond(200, delete_configuration(data, preview=path.endswith('preview')))
             elif post and path == '/api/password':
                 self.respond(200, {'password': STORE.password(data.get('id'))})
             elif re.fullmatch(r'/api/terminal/[A-Za-z0-9_-]{20,28}/(events|input|size|control|close)', path):
@@ -165,7 +186,10 @@ class Handler(BaseHTTPRequestHandler):
                     if type(cols) is int and type(rows) is int and 15 <= cols <= 520 and 4 <= rows <= 250 and not term.closed:
                         term.resize(cols, rows)
                 elif operation == 'close':
-                    term.close()
+                    with term.condition:
+                        if not term.closed and term.run and term.run['phase'] in ACTIVE:
+                            raise ValueError('请先结束流程，再断开 SSH 终端')
+                        term.close()
                 else:
                     action = data.get('action')
                     if action not in ('takeover', 'retry', 'next', 'end'):
