@@ -12,6 +12,7 @@ class TerminalPanel {
     this.node = $('#terminal-template').content.firstElementChild.cloneNode(true);
     this.node.dataset.session = meta.id;
     this.host = $('.xterm-host', this.node);
+    this.mountPoint = $('.xterm-mount', this.host);
     $('.terminal-index', this.node).textContent=String(ordinal);
     $('.term-name', this.node).textContent = meta.name;
     $('.focus-pane', this.node).onclick = () => this.workspace.focus(this.meta.id, true);
@@ -32,7 +33,8 @@ class TerminalPanel {
       theme:{background:'#111c2c', foreground:'#e4edf9', cursor:'#abceff', selectionBackground:'#345989'}, scrollback:4500 });
     this.fit = new FitAddon.FitAddon();
     this.terminal.loadAddon(this.fit);
-    this.terminal.open(this.host);
+    this.terminal.open(this.mountPoint);
+    this.viewport = $('.xterm-viewport', this.mountPoint);
     this.terminal.parser.registerOscHandler(52, () => true);
     this.terminal.onData(value => this.input(value));
     this.terminal.onResize(({cols,rows}) => {
@@ -45,7 +47,14 @@ class TerminalPanel {
     this.observer.observe(this.host);
   }
 
-  resize() { if (this.host.offsetWidth) this.fit?.fit(); }
+  resize() {
+    if (!this.mountPoint.offsetWidth || !this.terminal) return;
+    // Fit uses the unpadded mount width. Overlay scrollbars can report zero occupied pixels.
+    const occupied = this.viewport ? this.viewport.offsetWidth - this.viewport.clientWidth : 0;
+    const padding = `${Math.max(0, 16-occupied)}px`;
+    if (this.terminal.element.style.paddingRight!==padding) this.terminal.element.style.paddingRight=padding;
+    this.fit.fit();
+  }
 
   applySize() {
     const size = this.workspace.sizes.get(this.meta.id) || {};

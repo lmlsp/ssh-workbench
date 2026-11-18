@@ -34,7 +34,8 @@
 .selected-pane { font-size:.73rem; font-weight:650; color:#cbdfff; }
 .xterm-host { height:var(--terminal-height,clamp(310px,calc(100vh - 282px),760px)); background:var(--terminal); padding:10px 12px 24px 10px; }
 .terminal-panes.tiled .xterm-host { height:var(--terminal-height,clamp(260px,42vh,450px)); }
-.xterm-host .xterm { height:100%; }
+.xterm-mount,.xterm-mount > .xterm { width:100%; height:100%; }
+.xterm-mount .xterm-viewport { scrollbar-width:thin; scrollbar-color:#6c83a0 var(--terminal); scrollbar-gutter:stable; }
 .terminal-card .resize-pane { position:absolute; bottom:2px; right:2px; min-height:0; width:26px; height:22px; padding:0; border:1px solid transparent; border-radius:5px; background:var(--terminal); cursor:nwse-resize; touch-action:none; }
 .terminal-card .resize-pane::before { content:''; position:absolute; bottom:4px; right:4px; width:11px; height:11px; background:repeating-linear-gradient(135deg,transparent 0 2px,#96abc8 2px 3px,transparent 3px 4px); clip-path:polygon(100% 0,100% 100%,0 100%); }
 .terminal-card .resize-pane:hover,.terminal-card .resize-pane:focus-visible { background:#263b58; border-color:#96abc8; }
