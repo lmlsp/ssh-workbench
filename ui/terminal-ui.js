@@ -188,6 +188,9 @@ class TerminalPanel {
       ? packet.run.name : this.connectionName;
     $('.term-context',this.node).textContent = packet.closed ? 'SSH 已断开' : context
       ? `${context.user} · ${context.directory}` : '正在连接。请在终端处理 SSH 提示。';
+    const inputNotice = $('.terminal-input-notice',this.node);
+    inputNotice.textContent = packet.inputNotice || '';
+    inputNotice.hidden = !packet.inputNotice;
     const run = packet.run;
     const summary=$('.run-info',this.node);
     const complete=run?.phase==='succeeded';

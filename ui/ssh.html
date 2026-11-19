@@ -98,13 +98,18 @@
       <button type="button" id="mark-parameter">把选中的内容设为参数</button>
       <div id="parameter-fields" class="form-row" hidden><label>参数名<input id="edit-parameter-name" placeholder="buildUrl"></label><label>运行时的提示<input id="edit-parameter-label" placeholder="构建包链接"></label><button type="button" id="insert-parameter">设为参数</button></div>
       <div id="parameter-labels"></div>
-      <label for="edit-secret">切换用户密码（选填）</label><div class="actions secret-line"><input id="edit-secret" type="password" autocomplete="off"><button id="toggle-secret" type="button">显示</button><button id="clear-secret" type="button" hidden>清除密码</button></div>
+      <div class="form-row">
+        <label>自定义提示（选填）<input id="edit-followup-prompt" maxlength="200" placeholder="例如 Continue? [y/N]"></label>
+        <label>匹配提示时<select id="edit-followup-mode"><option value="auto">自动输入</option><option value="manual">提示我手动输入</option></select></label>
+      </div>
+      <label for="edit-secret">下一步输入（选填）</label><div class="actions secret-line"><input id="edit-secret" type="password" autocomplete="off"><button id="toggle-secret" type="button">显示</button><button id="clear-secret" type="button" hidden>清除</button></div>
+      <p id="followup-hint" class="field-hint" hidden>自动输入的文字可能出现在终端输出里。</p>
     </div>
-    <div id="flow-fields" hidden><label for="step-choice">按顺序加入快捷指令</label><div class="actions"><select id="step-choice"></select><button id="add-step" type="button">添加</button></div><ol id="step-list"></ol></div>
+    <div id="flow-fields" hidden><label for="step-choice">按顺序加入快捷指令</label><div class="actions"><select id="step-choice"></select><button id="add-step" type="button">添加</button></div><p class="field-hint">同一个包的步骤填同一分组名。留空的步骤为公共步骤。</p><ol id="step-list"></ol><datalist id="flow-groups"></datalist></div>
     <p class="error" id="editor-error" role="alert" hidden></p><div class="actions dialog-actions"><button type="button" id="cancel-edit">取消</button><button class="primary" type="submit" id="save">保存</button></div>
   </form></dialog>
 
-  <dialog id="parameters" class="editor-dialog"><form id="parameters-form"><h2 id="parameters-title"></h2><p id="parameters-terminal"></p><div id="parameters-inputs"></div><p class="error" id="parameters-error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-run" type="button">取消</button><button class="primary" type="submit">开始执行</button></div></form></dialog>
+  <dialog id="parameters" class="editor-dialog"><form id="parameters-form"><h2 id="parameters-title"></h2><p id="parameters-terminal"></p><fieldset id="run-groups" hidden><legend>选择本次要运行的分组</legend><div id="run-group-options"></div></fieldset><div id="parameters-inputs"></div><p class="error" id="parameters-error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-run" type="button">取消</button><button class="primary" type="submit">开始执行</button></div></form></dialog>
 
   <dialog id="delete-dialog" class="editor-dialog"><form id="delete-form"><h2 id="delete-title"></h2><p id="delete-message"></p><ul id="delete-items"></ul><p id="delete-error" class="error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-delete" type="button">取消</button><button id="confirm-delete" type="submit" class="danger-fill">确认删除</button></div></form></dialog>
 
@@ -116,6 +121,7 @@
     <div class="run-info" hidden><p class="run-message" role="status"></p><ol class="run-steps"></ol>
       <div class="actions run-controls"><button data-action="takeover">接管终端</button><button data-action="retry">重试本步</button><button data-action="next">本步已完成，继续</button><button data-action="end">结束流程</button></div>
     </div>
+    <p class="terminal-input-notice" role="status" hidden></p>
     <p class="error terminal-error" hidden></p><div class="xterm-host"><div class="xterm-mount" aria-label="SSH 终端"></div></div>
     <button type="button" class="resize-pane" aria-label="调整窗口宽高" title="拖动或用方向键调整，双击恢复默认"></button>
   </article></template>

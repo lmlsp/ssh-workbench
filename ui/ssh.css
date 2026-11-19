@@ -103,6 +103,13 @@
 #step-list { display:grid; gap:6px; list-style:none; padding:0; }
 #step-list .flow-step { position:relative; display:flex; align-items:center; gap:7px; min-width:0; margin:0; padding:5px 7px; background:var(--surface); border:1px solid var(--line); border-radius:7px; }
 .flow-step .step-name { flex:1; min-width:0; overflow-wrap:anywhere; }
+.flow-step .step-group { width:9em; min-width:0; }
+.field-hint { margin:4px 0; color:#495e79; font-size:.82rem; }
+.terminal-input-notice { margin:0; padding:7px 11px; color:#29466e; background:#eef4fd; font-size:.84rem; }
+#run-groups,.parameter-group { min-width:0; margin:8px 0; padding:8px 10px; border:1px solid var(--line); border-radius:7px; }
+#run-group-options { display:flex; flex-wrap:wrap; gap:8px 16px; }
+#run-group-options label { display:flex; align-items:center; gap:6px; margin:0; }
+#run-group-options input { width:auto; min-height:0; }
 .step-order { color:var(--muted); font:650 .8rem ui-monospace,monospace; }
 #step-list button { margin:0; }
 #step-list .step-grip { position:relative; width:28px; height:28px; padding:0; flex:none; border-color:transparent; background:transparent; cursor:grab; touch-action:none; }

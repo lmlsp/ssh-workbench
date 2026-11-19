@@ -66,7 +66,7 @@ def open_terminal(data):
         remaining = [t for t in TERMS.values() if t.closed]
         for old in remaining[:-12]:
             TERMS.pop(old.id, None)
-        term = Terminal(connection, on_event=terminal_changed, login_password=password)
+        term = Terminal(connection, on_event=terminal_changed, login_password=password, ssh_password=STORE.ssh_password)
         TERMS[term.id] = term
         return {'id': term.id}
 
@@ -79,7 +79,8 @@ def execute_on_terminal(data):
         kind = data.get('kind')
         if kind not in ('command', 'flow'):
             raise ValueError('请选择快捷指令或流程')
-        name, connection, steps, password = STORE.plan(kind, data.get('id'), data.get('params') or {})
+        name, connection, steps, password = STORE.plan(kind, data.get('id'), data.get('params') or {},
+                                                       data.get('groups'), data.get('groupParams'))
         with term.condition:
             if term.closed:
                 raise ValueError('选中的 SSH 终端已断开')

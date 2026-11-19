@@ -6,7 +6,7 @@ const state = {view:'terminal', model:{servers:[],connections:[],commands:[],flo
 const activePhases = ['connecting','switching','dispatch','running','between','paused'];
 const workspace = new TerminalWorkspace();
 const passwordControls={
-  commands:{input:'#edit-secret',toggle:'#toggle-secret',clear:'#clear-secret',endpoint:'password',hint:'需要 su 时可填写'},
+  commands:{input:'#edit-secret',toggle:'#toggle-secret',clear:'#clear-secret',endpoint:'password',hint:'例如 SSH 或 su 密码'},
   connections:{input:'#edit-ssh-password',toggle:'#toggle-ssh-password',clear:'#clear-ssh-password',endpoint:'connection-password',hint:'使用 SSH 密钥时可留空'},
 };
 
@@ -205,18 +205,47 @@ function askRun(collection,item) {
     const connection=byId('connections',item.connection);
     return actionNotice(`请选择「${connection?.name || '对应 SSH 连接'}」的终端执行。`);
   }
-  const steps=collection==='flows'?item.steps.map(id=>byId('commands',id)).filter(Boolean):[item];
-  const fields=Object.assign({},...steps.map(step=>step.params));
+  const steps=collection==='flows'?item.steps.map(id=>byId('commands',id)):[item];
+  const groups=new Map([['',new Map()]]);
+  steps.forEach((step,index)=>{
+    const group=item.stepGroups?.[index]||'';
+    if(!groups.has(group))groups.set(group,new Map());
+    for(const [key,label] of Object.entries(step?.params||{}))groups.get(group).set(key,label);
+  });
   const data={kind:collection==='flows'?'flow':'command',id:item.id,terminal:panel.meta.id};
-  if(!Object.keys(fields).length){void execute({...data,params:{}}).catch(error=>actionNotice(error.message));return;}
+  if(groups.size===1 && !groups.get('').size){void execute({...data,params:{}}).catch(error=>actionNotice(error.message));return;}
   state.parameters=data;
   $('#parameters-title').textContent=item.name;
   $('#parameters-terminal').textContent=`执行位置 · 终端 ${panel.ordinal} · ${panel.connectionName}`;
-  $('#parameters-inputs').replaceChildren(...Object.entries(fields).map(([key,label])=>{
-    const wrap=document.createElement('label'),input=document.createElement('input');
-    wrap.textContent=label;input.name=key;input.required=true;input.maxLength=4000;wrap.append(input);return wrap;
+  const choices=[...groups.keys()].filter(Boolean);
+  $('#run-groups').hidden=!choices.length;
+  $('#run-group-options').replaceChildren(...choices.map(group=>{
+    const wrap=document.createElement('label'), input=document.createElement('input');
+    input.type='checkbox';input.value=group;input.onchange=updateParameterGroups;
+    wrap.append(input,group);return wrap;
   }));
+  $('#parameters-inputs').replaceChildren(...[...groups].filter(([,fields])=>fields.size).map(([group,fields])=>{
+    const section=document.createElement('fieldset');section.className='parameter-group';section.dataset.group=group;
+    const legend=document.createElement('legend');legend.textContent=group||'运行参数';section.append(legend);
+    for(const [key,label] of fields){
+      const wrap=document.createElement('label'), input=document.createElement('input');
+      wrap.textContent=label;input.name=key;input.required=true;input.maxLength=4000;wrap.append(input);section.append(wrap);
+    }
+    return section;
+  }));
+  updateParameterGroups();
   message('#parameters-error');$('#parameters').showModal();
+}
+
+function selectedGroups() { return $$('#run-group-options input:checked').map(input=>input.value); }
+
+function updateParameterGroups() {
+  const selected=selectedGroups();
+  for(const section of $$('#parameters-inputs fieldset')){
+    section.hidden=Boolean(section.dataset.group)&&!selected.includes(section.dataset.group);
+    section.disabled=section.hidden;
+  }
+  $('#parameters-form button[type="submit"]').disabled=!$('#run-groups').hidden&&!selected.length;
 }
 
 async function askDelete(collection,id) {
@@ -256,7 +285,7 @@ async function copyFlow(id,control) {
       name=Array.from(stem).slice(0,60-suffix.length).join('')+suffix;
       if(!names.has(name))break;
     }
-    const duplicate=await api('flows',{name,connection:source.connection,app:source.app||'',type:source.type||'',steps:[...source.steps]});
+    const duplicate=await api('flows',{name,connection:source.connection,app:source.app||'',type:source.type||'',steps:source.steps,stepGroups:source.stepGroups});
     await load();
     openEditor('flows',duplicate);
   } catch(error) { actionNotice(error.message); }
@@ -265,7 +294,7 @@ async function copyFlow(id,control) {
 
 function showContext() {
   const connection=$('#edit-connection').value;
-  const first=byId('commands',state.editor.steps[0]);
+  const first=byId('commands',state.editor.steps[0]?.id);
   const choices=state.model.commands.filter(item=>item.connection===connection&&!item.switchTo&&(!first||item.user===first.user));
   select($('#step-choice'),choices.map(item=>[item.id,`${item.name} · ${item.user}`]));
   $('#add-step').disabled=!choices.length;
@@ -273,16 +302,27 @@ function showContext() {
 
 function drawSteps() {
   showContext();
-  $('#step-list').replaceChildren(...state.editor.steps.map((id,index)=>{
-    const step=byId('commands',id),li=document.createElement('li'); li.textContent=step?.name || '未知指令';
+  $('#step-list').replaceChildren(...state.editor.steps.map((entry,index)=>{
+    const step=byId('commands',entry.id),li=document.createElement('li'); li.textContent=step?.name || '未知指令';
     li.className='flow-step';
     const handle=document.createElement('button');handle.type='button';handle.className='step-grip';
     handle.title='拖动或用上下方向键排序';handle.setAttribute('aria-label',`调整第 ${index+1} 步：${li.textContent}`);
     const number=document.createElement('span'),name=document.createElement('span');
     number.textContent=String(index+1);number.className='step-order';name.textContent=li.textContent;name.className='step-name';
+    const group=document.createElement('input');
+    group.className='step-group';group.value=entry.group;group.maxLength=32;group.placeholder='公共步骤';
+    group.setAttribute('list','flow-groups');group.setAttribute('aria-label',`第 ${index+1} 步分组`);
+    group.oninput=()=>{entry.group=group.value.trim();};
+    group.onchange=()=>{group.value=entry.group;drawGroupOptions();};
     bindStepDrag(handle,li,index);
-    li.replaceChildren(handle,number,name,button('移除',()=>{state.editor.steps.splice(index,1);drawSteps();}));return li;
+    li.replaceChildren(handle,number,name,group,button('移除',()=>{state.editor.steps.splice(index,1);drawSteps();}));return li;
   }));
+  drawGroupOptions();
+}
+
+function drawGroupOptions() {
+  const groups=new Set(state.editor.steps.map(step=>step.group).filter(Boolean));
+  $('#flow-groups').replaceChildren(...Array.from(groups,name=>new Option(name,name)));
 }
 
 function moveStep(from,to) {
@@ -361,7 +401,8 @@ function drawLabels() {
 function openEditor(collection,item={}) {
   if($('#editor').open)return;
   const server=collection==='connections',command=collection==='commands',flow=collection==='flows';
-  state.editor={collection,id:item.id,connection:item.connection,app:item.app||'',steps:[...(item.steps||[])],params:{...item.params},
+  state.editor={collection,id:item.id,connection:item.connection,app:item.app||'',
+    steps:(item.steps||[]).map((id,index)=>({id,group:item.stepGroups?.[index]||''})),params:{...item.params},
     terminal:item.terminal,nested:item.nested,passwordSet:!!item.passwordSet,secretTouched:false};
   const defaultConnection=state.view==='library'?byId('servers',$('#library-server').value)?.connections[0]:selectedConnection()?.id;
   $('#editor-title').textContent=(item.id?'编辑':'新建')+(server?' SSH 连接':command?'快捷指令':'自动化流程');
@@ -374,9 +415,11 @@ function openEditor(collection,item={}) {
   $('#edit-name').value=item.name||'';$('#edit-host').value=item.host||'';$('#edit-port').value=item.port||22;$('#edit-login-user').value=item.user||'';
   $('#edit-type').value=item.type||'';$('#edit-user').value=item.user||byId('connections',$('#edit-connection').value)?.user||'';
   $('#edit-directory').value=item.directory||'';$('#edit-script').value=item.script||'';
+  $('#edit-followup-prompt').value=item.followup?.prompt||'';
+  $('#edit-followup-mode').value=item.followup?.mode||'auto';updateFollowupFields();
   const fields=passwordControls[collection];
   if(fields) {
-    const input=$(fields.input);input.value='';input.type='password';input.placeholder=item.passwordSet?'已保存，输入可更换':fields.hint;
+    const input=$(fields.input);input.value='';input.type='password';input.placeholder=item.passwordSet?'••••••••  已保存':fields.hint;
     $(fields.toggle).textContent='显示';$(fields.clear).hidden=!item.passwordSet;
   }
   drawSteps();drawLabels();message('#editor-error');$('#editor').showModal();
@@ -389,8 +432,15 @@ function readEditor() {
   value.connection=$('#edit-connection').value;
   if(value.connection===editor.nested?.id)value.terminal=editor.terminal;
   value.app=value.connection===editor.connection?editor.app:'';value.type=$('#edit-type').value;
-  if(editor.collection==='flows')return {...value,steps:editor.steps};
-  return {...value,script:$('#edit-script').value,user:$('#edit-user').value,directory:$('#edit-directory').value,params:editor.params};
+  if(editor.collection==='flows')return {...value,steps:editor.steps.map(step=>step.id),stepGroups:editor.steps.map(step=>step.group)};
+  return {...value,script:$('#edit-script').value,user:$('#edit-user').value,directory:$('#edit-directory').value,params:editor.params,
+    followup:{prompt:$('#edit-followup-prompt').value,mode:$('#edit-followup-mode').value}};
+}
+
+function updateFollowupFields() {
+  const custom=Boolean($('#edit-followup-prompt').value.trim()),mode=$('#edit-followup-mode');
+  mode.disabled=!custom;
+  $('#followup-hint').hidden=!custom||mode.value!=='auto';
 }
 
 $$('[data-view]').forEach(node=>{node.onclick=()=>show(node.dataset.view);});
@@ -410,7 +460,7 @@ $('#edit-connection').onchange=()=>{
   if(state.editor.collection==='flows'){state.editor.steps=[];drawSteps();}
   if(state.editor.collection==='commands')$('#edit-user').value=byId('connections',$('#edit-connection').value)?.user||'';
 };
-$('#add-step').onclick=()=>{const choice=$('#step-choice').value;if(choice&&state.editor.steps.length<24){state.editor.steps.push(choice);drawSteps();}};
+$('#add-step').onclick=()=>{const choice=$('#step-choice').value;if(choice&&state.editor.steps.length<24){state.editor.steps.push({id:choice,group:''});drawSteps();}};
 $('#cancel-edit').onclick=$('#editor-close').onclick=()=>$('#editor').close();
 $('#editor').addEventListener('close',()=>{Object.values(passwordControls).forEach(fields=>{$(fields.input).value='';});state.editor=null;});
 for(const fields of Object.values(passwordControls)){
@@ -431,6 +481,7 @@ for(const fields of Object.values(passwordControls)){
   };
 }
 $('#edit-script').oninput=drawLabels;
+$('#edit-followup-prompt').oninput=$('#edit-followup-mode').onchange=updateFollowupFields;
 $('#mark-parameter').onclick=()=>{
   const input=$('#edit-script');let start=input.selectionStart,end=input.selectionEnd;
   if(start===end)return message('#editor-error','先在命令中选中链接或要替换的值。');
@@ -455,8 +506,12 @@ $('#editor-form').onsubmit=async event=>{
 $('#cancel-run').onclick=()=>$('#parameters').close();
 $('#parameters-form').onsubmit=async event=>{
   event.preventDefault();const submit=$('button[type="submit"]',event.currentTarget);submit.disabled=true;
-  try{await execute({...state.parameters,params:Object.fromEntries(new FormData(event.currentTarget))});$('#parameters').close();}
-  catch(error){message('#parameters-error',error.message);}finally{submit.disabled=false;}
+  const fields=Object.fromEntries($$('#parameters-inputs fieldset:not([disabled])').map(section=>[
+    section.dataset.group,Object.fromEntries($$('input',section).map(input=>[input.name,input.value])),
+  ]));
+  const { '': params={}, ...groupParams }=fields;
+  try{await execute({...state.parameters,params,groups:selectedGroups(),groupParams});$('#parameters').close();}
+  catch(error){message('#parameters-error',error.message);}finally{updateParameterGroups();}
 };
 $('#cancel-delete').onclick=()=>$('#delete-dialog').close();
 $('#delete-form').onsubmit=async event=>{

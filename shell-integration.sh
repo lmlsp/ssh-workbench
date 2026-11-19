@@ -99,7 +99,12 @@ __ow_dispatch() {
 }
 
 ssh() {
-    local destination='' port='' host launcher parsing_options=1
+    if [[ ! -t 0 || ! -t 1 || $BASH_SUBSHELL != 0 ]]; then
+        command ssh "$@"
+        return
+    fi
+    local destination='' port='' host account launcher parsing_options=1
+    local key value identity='' resolved_host='' resolved_port=''
     local -a original=("$@")
     while (( $# )); do
         case $1 in
@@ -141,6 +146,19 @@ ssh() {
         command ssh "${original[@]}"
         return
     fi
+    account=''
+    if [[ $destination == *@* ]]; then account=${destination%@*}; fi
+    while read -r key value; do
+        case $key in
+            user) identity=$value ;;
+            hostname) resolved_host=$value ;;
+            port) resolved_port=$value ;;
+        esac
+    done < <(command ssh -G "${original[@]}" </dev/null 2>/dev/null)
+    if [[ $resolved_port =~ ^[0-9]{1,5}$ ]]; then port=$resolved_port; fi
+    if [[ -n $identity && -n $resolved_host && -n $port ]]; then
+        __ow_emit N "$host" "$port" "$account" "$identity" "$resolved_host"
+    fi
     launcher="OW_ROUTE='${OW_ROUTE:-}' OW_HOP_HOST='$host' OW_HOP_PORT='$port' OW_BOOT=$OW_BOOT OW_NONCE=$OW_NONCE exec /bin/bash -c 'exec /bin/bash --rcfile <(printf %s \"\$OW_BOOT\" | base64 -d) -i'"
     command ssh -tt "${original[@]}" "$launcher"
 }
@@ -153,6 +171,7 @@ su() {
             parent=$(printf '%s\0' "$__ow_user" "$PWD" "$__ow_latest_script" "$2" | base64 -w0)
             __ow_history=$__ow_latest_number
         fi
+        if [[ -t 0 && -t 1 && $BASH_SUBSHELL == 0 ]]; then __ow_emit U "$2"; fi
         command su - "$2" --session-command "OW_ROUTE='${OW_ROUTE:-}' OW_PARENT=$parent OW_BOOT=$OW_BOOT OW_NONCE=$OW_NONCE exec /bin/bash -c 'exec /bin/bash --rcfile <(printf %s \"\$OW_BOOT\" | base64 -d) -i'"
         status=$?
         if [[ $status -ne 0 && -n $parent ]]; then
@@ -182,3 +201,4 @@ unset OW_PARENT
 bind -m emacs-standard -x '"\C-x\C-g":__ow_dispatch'
 bind -m vi-insert -x '"\C-x\C-g":__ow_dispatch'
 PROMPT_COMMAND=(__ow_prompt "${PROMPT_COMMAND[@]}")
+PS0="${PS0:-}"'${__ow_pending_ticket:+$(__ow_emit B "$__ow_pending_ticket")}'

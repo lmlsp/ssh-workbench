@@ -106,6 +106,49 @@ def switch_target(script):
     return None
 
 
+def ssh_target(script):
+    """Recognize the interactive SSH forms supported by the terminal hook."""
+    if '\n' in script or '\r' in script:
+        return None
+    try:
+        words = shlex.split(script)
+    except ValueError:
+        return None
+    if not words or words[0] != 'ssh':
+        return None
+    destination = ''
+    port = None
+    options = True
+    args = iter(words[1:])
+    for word in args:
+        if word == '--' and options and not destination:
+            options = False
+        elif word.startswith('-p') and options and port is None:
+            value = word[2:] or next(args, '')
+            if not re.fullmatch(r'[0-9]{1,5}', value) or not 1 <= int(value) <= 65535:
+                return None
+            port = int(value)
+        elif not destination and not word.startswith('-'):
+            destination = word
+        else:
+            return None
+    account, delimiter, host = destination.rpartition('@')
+    if host.startswith('[') and host.endswith(']'):
+        host = host[1:-1]
+    if not valid_host(host) or delimiter and not USER.fullmatch(account):
+        return None
+    return (normalize_host(host), port or 22, account)
+
+
+def flow_groups(data, steps):
+    groups = data.get('stepGroups')
+    if groups is None:
+        return [''] * len(steps)
+    if not isinstance(groups, list) or len(groups) != len(steps):
+        raise ValueError('每个步骤须对应一个分组')
+    return [clean({'name': group}, 'name', 32, False) for group in groups]
+
+
 def render(script, values):
     """Replace complete, unquoted shell words with a single quoted argument."""
     placeholders = {match.start(): match for match in PARAM.finditer(script)}
@@ -321,6 +364,18 @@ class Store:
                     render(script, dict.fromkeys(params, 'test parameter'))
                     item.update(user=user, directory=directory, script=script, params=params)
                     target = switch_target(script)
+                    ssh = ssh_target(script)
+                    followup = data.get('followup', previous.get('followup')) or {}
+                    if not isinstance(followup, dict):
+                        raise ValueError('请检查下一步输入的配置')
+                    prompt = clean(followup, 'prompt', 200, False)
+                    if prompt:
+                        mode = followup.get('mode')
+                        if mode not in ('auto', 'manual'):
+                            raise ValueError('请选择如何响应提示')
+                        if target or ssh:
+                            raise ValueError('SSH 和 su 会自动识别密码提示，请将自定义提示留空')
+                        item['followup'] = {'prompt': prompt, 'mode': mode}
                     if target and any(identifier in flow['steps'] for flow in state['flows']):
                         raise ValueError('请先从流程移除这条指令，再改成切换用户指令')
                     if previous and (previous['connection'], previous['user']) != (connection, user):
@@ -337,12 +392,19 @@ class Store:
                         if password:
                             item['secret'] = seal(identifier, password)
                     elif (previous.get('secret') and previous['connection'] == connection and previous['user'] == user
-                          and switch_target(previous['script']) == target):
+                          and switch_target(previous['script']) == target
+                          and ssh_target(previous['script']) == ssh
+                          and previous.get('followup', {}).get('prompt') == item.get('followup', {}).get('prompt')):
                         item['secret'] = previous['secret']
                 else:
                     steps = data.get('steps')
                     self.flow_steps(state, steps, connection)
                     item['steps'] = steps
+                    if 'stepGroups' not in data and previous.get('stepGroups') and steps != previous['steps']:
+                        raise ValueError('请刷新页面后修改带分组的流程')
+                    groups = flow_groups(data if 'stepGroups' in data else previous, steps)
+                    if any(groups):
+                        item['stepGroups'] = groups
             state[collection] = [item if row['id'] == identifier else row for row in state[collection]]
             if not previous:
                 state[collection].append(item)
@@ -369,7 +431,7 @@ class Store:
             raise ValueError('流程中的快捷指令须使用同一服务器连接和执行用户')
         return commands
 
-    def plan(self, kind, identifier, values):
+    def plan(self, kind, identifier, values, selected=None, group_values=None):
         with self.lock:
             state = self.read()
             chosen = match(state, 'flows' if kind == 'flow' else 'commands', identifier)
@@ -377,18 +439,49 @@ class Store:
             connection = match(state, 'connections', chosen['connection'])
             if not isinstance(values, dict):
                 raise ValueError('请输入执行参数')
+            groups = flow_groups(chosen, steps) if kind == 'flow' else ['']
+            available = set(groups) - {''}
+            if available:
+                if not isinstance(selected, list) or not selected or any(not isinstance(group, str) or group not in available for group in selected):
+                    raise ValueError('请至少选择一个要执行的分组')
+                if group_values is None:
+                    group_values = {}
+                if not isinstance(group_values, dict):
+                    raise ValueError('请检查分组参数')
+            selected_steps = [(step, group) for step, group in zip(steps, groups) if not group or group in selected]
             result = []
-            for step in steps:
-                bound = {name: clean(values, name, 4000) for name in step['params']}
+            password = None
+            for step, group in selected_steps:
+                params = group_values.get(group, {}) if group else values
+                if not isinstance(params, dict):
+                    raise ValueError('请检查分组参数')
+                bound = {name: clean(params, name, 4000) for name in step['params']}
                 script = command_text(render(step['script'], bound))
                 planned = {'name': step['name'], 'user': step['user'], 'directory': step['directory'],
                            'script': script, 'status': 'pending'}
                 target = switch_target(step['script'])
                 if target:
                     planned['switchTo'] = target
+                ssh = ssh_target(step['script'])
+                if ssh:
+                    planned['sshLogin'] = ssh
+                    planned['response'] = unseal(step)
+                elif step.get('followup'):
+                    planned['followup'] = step['followup']
+                    planned['response'] = unseal(step) if step['followup']['mode'] == 'auto' else None
+                elif password is None:
+                    password = unseal(step)
                 result.append(planned)
-            password = next((unseal(step) for step in steps if step.get('secret')), None)
             return chosen['name'], connection, result, password
+
+    def ssh_password(self, connection, source_user, host, port, user):
+        with self.lock:
+            passwords = {
+                unseal(step) for step in self.read()['commands']
+                if step['connection'] == connection and step['user'] == source_user and step.get('secret')
+                and ssh_target(step['script']) == (host, port, user)
+            }
+            return next(iter(passwords)) if len(passwords) == 1 else None
 
     def password(self, identifier):
         with self.lock:

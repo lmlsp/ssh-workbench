@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import auth
 import catalog
-from terminal import pack, routed_endpoint
+from terminal import Terminal, pack, routed_endpoint
 import workbench
 
 
@@ -101,6 +101,47 @@ class StoreTests(unittest.TestCase):
         a, b = self.command(first, 'Inspect'), self.command(second, 'Check')
         with self.assertRaises(ValueError):
             self.store.save('flows', {'name': 'Mixed', 'connection': first['id'], 'steps': [a['id'], b['id']]})
+
+    def test_grouped_flow_binds_each_selected_groups_parameters_in_order(self):
+        node = self.connection('App', 'one.example')
+        common = self.command(node, 'Stop', 'printf stop')
+        download = self.command(node, 'Download', 'printf %s {{link}}')
+        finish = self.command(node, 'Start', 'printf start')
+        flow = self.store.save('flows', {'name': 'Grouped', 'connection': node['id'],
+                                         'steps': [common['id'], download['id'], download['id'], finish['id']],
+                                         'stepGroups': ['', 'A', 'B', '']})
+        with self.assertRaisesRegex(ValueError, '至少选择一个'):
+            self.store.plan('flow', flow['id'], {})
+        _, _, steps, _ = self.store.plan('flow', flow['id'], {}, ['B'], {'B': {'link': 'build-b'}})
+        self.assertEqual([step['script'] for step in steps], ['printf stop', 'printf %s build-b', 'printf start'])
+        _, _, steps, _ = self.store.plan('flow', flow['id'], {}, ['B', 'A'], {'A': {'link': 'build-a'}, 'B': {'link': 'build-b'}})
+        self.assertEqual([step['script'] for step in steps], ['printf stop', 'printf %s build-a', 'printf %s build-b', 'printf start'])
+        prior_client = {key: value for key, value in flow.items() if key != 'stepGroups'}
+        self.assertEqual(self.store.save('flows', dict(prior_client, name='Renamed'))['stepGroups'], flow['stepGroups'])
+
+    def test_ssh_uses_legacy_saved_value_and_manual_login_requires_unique_password(self):
+        node = self.connection('Jump', 'jump.example')
+        command = self.command(node, 'Connect', 'ssh -p 2222 operator@dest.example', password='fixture-one')
+        _, _, steps, switch_password = self.store.plan('command', command['id'], {})
+        self.assertIsNone(switch_password)
+        self.assertEqual(steps[0]['response'], 'fixture-one')
+        self.assertEqual(self.store.ssh_password(node['id'], 'appuser', 'dest.example', 2222, 'operator'), 'fixture-one')
+        self.assertIsNone(self.store.ssh_password(node['id'], 'appuser', 'dest.example', 22, 'operator'))
+        self.store.save('commands', dict(command, name='Edited'))
+        self.assertEqual(self.store.password(command['id']), 'fixture-one')
+        self.command(node, 'Duplicate', 'ssh operator@dest.example -p 2222', password='fixture-two')
+        self.assertIsNone(self.store.ssh_password(node['id'], 'appuser', 'dest.example', 2222, 'operator'))
+        self.store.save('commands', dict(command, script='ssh -p 2222 operator@new.example'))
+        self.assertIsNone(self.store.password(command['id']))
+
+    def test_custom_manual_prompt_never_uses_a_saved_response(self):
+        node = self.connection('App', 'one.example')
+        command = self.command(node, 'Prompt', 'read -r -p "Continue?" answer', password='fixture-response',
+                               followup={'prompt': 'Continue?', 'mode': 'manual'})
+        _, _, steps, switch_password = self.store.plan('command', command['id'], {})
+        self.assertIsNone(switch_password)
+        self.assertIsNone(steps[0]['response'])
+        self.assertEqual(steps[0]['followup']['prompt'], 'Continue?')
 
     def test_nested_connections_save_by_login_path(self):
         first = self.connection('First jump', 'one.example')
@@ -254,3 +295,21 @@ class SelectedTerminalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '请选择'):
             workbench.execute_on_terminal({'kind':'command','id':'example','terminal':'selected'})
         self.terminal.begin.assert_not_called()
+
+
+class PromptTests(unittest.TestCase):
+    def test_password_response_requires_exact_ssh_host_and_is_sent_once(self):
+        term = Terminal.__new__(Terminal)
+        term.write = Mock()
+        term.changed = Mock()
+        term.prepare_input('ssh', 'fixture-response', login='operator', host='target.example')
+        term.prompt = b"\r\noperator@other.example's password: "
+        term.respond_to_prompt()
+        term.write.assert_not_called()
+        term.prompt = b"\r\noperator@target.example's password: "
+        term.respond_to_prompt()
+        term.write.assert_called_once_with(b'fixture-response\r')
+        term.prompt = b"\r\noperator@target.example's password: "
+        term.respond_to_prompt()
+        term.write.assert_called_once()
+        self.assertEqual(term.waiting_for_input, '等待输入密码')
