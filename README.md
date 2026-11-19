@@ -17,7 +17,9 @@ python workbench.py set-password
 python workbench.py
 ```
 
-打开 [http://127.0.0.1:14441/](http://127.0.0.1:14441/)，用 `admin` 和刚刚设置的密码登录。所有配置初始为空。可用 `WORKBENCH_PORT` 改本机端口，`WORKBENCH_DATA_DIR` 指定独立的数据目录。服务仅监听 IPv4 回环地址。
+打开 [http://127.0.0.1:14441/](http://127.0.0.1:14441/)，用 `admin` 和刚刚设置的密码登录。所有配置初始为空。可用 `WORKBENCH_PORT` 改端口，`WORKBENCH_DATA_DIR` 指定独立的数据目录。默认监听 IPv4 回环地址。
+
+内网主机可用 `WORKBENCH_BIND_ADDRESS` 选择一个具体的 IPv4 地址，`WORKBENCH_ALLOWED_NETWORKS` 填允许访问的 IPv4 CIDR（多项用逗号分隔），并通过 `WORKBENCH_TLS_CERT` 和 `WORKBENCH_TLS_KEY` 指定 HTTPS 证书和私钥。证书应覆盖访问 IP。内网模式仍使用单个管理员账户。
 
 ## 使用方式
 

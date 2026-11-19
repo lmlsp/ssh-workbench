@@ -12,6 +12,19 @@ import catalog
 import workbench
 
 
+class ListenerTests(unittest.TestCase):
+    def test_local_default_can_use_http(self):
+        self.assertEqual(workbench.listener_options('127.0.0.1', '', '', ''), (None, ()))
+
+    def test_lan_listener_requires_tls_and_explicit_scope(self):
+        with self.assertRaisesRegex(ValueError, 'LAN access'):
+            workbench.listener_options('192.0.2.10', '', '', '192.0.2.0/24')
+        with self.assertRaisesRegex(ValueError, 'LAN access'):
+            workbench.listener_options('192.0.2.10', 'example.pem', 'example.key', '')
+        with self.assertRaisesRegex(ValueError, 'specific IPv4'):
+            workbench.listener_options('0.0.0.0', '', '', '')
+
+
 class StoreTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()

@@ -4,10 +4,12 @@ import argparse
 from getpass import getpass
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import IPv4Address, IPv4Network
 import json
 import os
 import re
 import secrets
+import ssl
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -19,8 +21,12 @@ from settings import PORT, ROOT, setup_data
 from terminal import ACTIVE, Terminal
 
 
-HOST = f'127.0.0.1:{PORT}'
-ORIGIN = 'http://' + HOST
+BIND_ADDRESS = os.environ.get('WORKBENCH_BIND_ADDRESS', '127.0.0.1')
+TLS_CERT = os.environ.get('WORKBENCH_TLS_CERT', '')
+TLS_KEY = os.environ.get('WORKBENCH_TLS_KEY', '')
+ALLOWED_NETWORKS = os.environ.get('WORKBENCH_ALLOWED_NETWORKS', '')
+HOST = f'{BIND_ADDRESS}:{PORT}'
+ORIGIN = ('https://' if TLS_CERT else 'http://') + HOST
 STORE = Store()
 SESSIONS = {}
 TERM_LOCK = threading.RLock()
@@ -177,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         path = parsed.path
         if self.headers.get('Host') != HOST or post and self.headers.get('Origin') != ORIGIN:
-            self.respond(403, {'error': '请从本机工作台访问'}, head=head)
+            self.respond(403, {'error': '请使用工作台配置的访问地址'}, head=head)
             return
         try:
             if not post and path in ASSETS:
@@ -202,7 +208,8 @@ class Handler(BaseHTTPRequestHandler):
                     for old in [key for key, expiry in SESSIONS.items() if expiry <= now]:
                         del SESSIONS[old]
                     SESSIONS[token] = now + 8 * 60 * 60
-                self.respond(200, {'ok': True}, cookie=f'ssh_workbench={token}; Path=/; SameSite=Strict; HttpOnly')
+                cookie = f'ssh_workbench={token}; Path=/; SameSite=Strict; HttpOnly'
+                self.respond(200, {'ok': True}, cookie=cookie + ('; Secure' if TLS_CERT else ''))
                 return
             if not self.authorized():
                 self.respond(401, {'error': '请先登录'}, head=head)
@@ -278,6 +285,44 @@ class Handler(BaseHTTPRequestHandler):
         self.route(post=True)
 
 
+def listener_options(address, certificate, key, allowed):
+    bind = IPv4Address(address)
+    if bind.is_unspecified or bind.is_multicast or int(bind) == 0xffffffff:
+        raise ValueError('Set a specific IPv4 address for WORKBENCH_BIND_ADDRESS')
+    if bool(certificate) != bool(key):
+        raise ValueError('Set both WORKBENCH_TLS_CERT and WORKBENCH_TLS_KEY')
+    networks = tuple(IPv4Network(item.strip()) for item in allowed.split(',') if item.strip())
+    if not bind.is_loopback and (not certificate or not networks):
+        raise ValueError('LAN access requires HTTPS and WORKBENCH_ALLOWED_NETWORKS')
+    context = None
+    if certificate:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(certificate, key)
+    return context, networks
+
+
+class WorkbenchServer(ThreadingHTTPServer):
+    def __init__(self, address, handler, tls, networks):
+        self.tls = tls
+        self.networks = networks
+        super().__init__(address, handler)
+
+    def verify_request(self, request, client_address):
+        return not self.networks or any(IPv4Address(client_address[0]) in network for network in self.networks)
+
+    def process_request_thread(self, request, client_address):
+        if self.tls:
+            try:
+                request.settimeout(10)
+                request = self.tls.wrap_socket(request, server_side=True)
+                request.settimeout(30)
+            except OSError:
+                self.shutdown_request(request)
+                return
+        super().process_request_thread(request, client_address)
+
+
 def main():
     parser = argparse.ArgumentParser(description='SSH Workbench for a local desktop')
     parser.add_argument('command', choices=('serve', 'set-password'), nargs='?', default='serve')
@@ -298,8 +343,14 @@ def main():
         parser.error('Run python3 workbench.py set-password first')
     if not (ROOT / 'ui/node_modules/@xterm/xterm/lib/xterm.js').is_file():
         parser.error('Run npm ci --prefix ui first')
+    try:
+        tls, networks = listener_options(BIND_ADDRESS, TLS_CERT, TLS_KEY, ALLOWED_NETWORKS)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
+    server = WorkbenchServer((BIND_ADDRESS, PORT), Handler, tls, networks)
     print(f'SSH Workbench is listening at {ORIGIN}/', flush=True)
-    ThreadingHTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
+    with server:
+        server.serve_forever()
 
 
 if __name__ == '__main__':
