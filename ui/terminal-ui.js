@@ -26,6 +26,8 @@ class TerminalPanel {
   }
 
   get path() { return `terminal/${this.meta.id}`; }
+  get connectionId() { return this.packet?.endpoint?.id || this.meta.connection; }
+  get connectionName() { return byId('connections',this.connectionId)?.name || this.packet?.endpoint?.name || this.meta.connectionName; }
 
   open() {
     if (this.terminal) return;
@@ -177,20 +179,22 @@ class TerminalPanel {
     const oldRunId = this.packet?.run?.id;
     const oldHistory = this.packet?.history?.[0]?.id;
     const oldUser = this.packet?.context?.user;
+    const oldConnection = this.connectionId;
     this.packet = packet;
     this.meta.closed = packet.closed;
     const context = packet.context;
-    $('.term-name',this.node).textContent = packet.run?.name || this.meta.connectionName;
+    const changedConnection = oldConnection !== this.connectionId;
+    $('.term-name',this.node).textContent = activePhases.includes(packet.run?.phase) && packet.run.connection===this.connectionId
+      ? packet.run.name : this.connectionName;
     $('.term-context',this.node).textContent = packet.closed ? 'SSH 已断开' : context
-      ? `${packet.run ? this.meta.connectionName+' · ' : ''}${context.user} · ${context.directory}` : '正在连接。请在终端处理 SSH 提示。';
+      ? `${context.user} · ${context.directory}` : '正在连接。请在终端处理 SSH 提示。';
     const run = packet.run;
     const summary=$('.run-info',this.node);
     const complete=run?.phase==='succeeded';
     if(!complete){clearTimeout(this.completionTimer);this.completionExpired=false;}
     if(complete && (oldPhase!=='succeeded'||oldRunId!==run.id)) {
       clearTimeout(this.completionTimer);
-      const finished=Number.isFinite(run.finishedAt)?run.finishedAt:Date.now();
-      const remaining=Math.max(0,Math.min(5000,finished+5000-Date.now()));
+      const remaining=Math.max(0,5000-(run.completionAgeMs??0));
       this.completionExpired=remaining===0;
       if(remaining)this.completionTimer=setTimeout(()=>{
         this.completionExpired=true;summary.hidden=true;
@@ -209,16 +213,16 @@ class TerminalPanel {
       for (const action of ['retry','next']) {
         const node = $(`[data-action="${action}"]`,this.node);
         const expected = action==='next' && run.switchTo ? run.switchTo : run.user;
-        node.hidden = run.phase !== 'paused'; node.disabled = !packet.ready || context?.user !== expected;
+        node.hidden = run.phase !== 'paused'; node.disabled = !packet.ready || context?.user !== expected || run.connection!==this.connectionId;
       }
       $('[data-action="end"]',this.node).hidden = !activePhases.includes(run.phase);
     }
-    if (packet.closed || oldPhase !== run?.phase) this.workspace.drawTabs();
+    if (packet.closed || oldPhase !== run?.phase || changedConnection) this.workspace.drawTabs();
     const newest = packet.history?.[0];
     if (this.workspace.active() === this) {
       const changedHistory=oldHistory!==newest?.id;
       if (changedHistory && newest?.switchTo && !run) state.side='history';
-      if (oldUser!==context?.user || packet.closed || changedHistory && state.side==='history')renderSidebar();
+      if (oldUser!==context?.user || packet.closed || changedConnection || changedHistory && state.side==='history')renderSidebar();
     }
   }
 }
@@ -293,11 +297,11 @@ class TerminalWorkspace {
     root.replaceChildren(...[...this.panels.values()].map(panel=>{
       const id=panel.meta.id, tab=document.createElement('span'); tab.className='terminal-tab';
       const label=button('',()=>this.focus(id,true));
-      label.className='terminal-tab-label'; label.title=panel.meta.connectionName;
+      label.className='terminal-tab-label'; label.title=panel.connectionName;
       const number=document.createElement('span'), name=document.createElement('span');
       number.className='terminal-index';number.textContent=String(panel.ordinal);
-      name.className='terminal-tab-name';name.textContent=panel.meta.connectionName;
-      label.append(number,name);label.setAttribute('aria-label',`终端 ${panel.ordinal} · ${panel.meta.connectionName}`);
+      name.className='terminal-tab-name';name.textContent=panel.connectionName;
+      label.append(number,name);label.setAttribute('aria-label',`终端 ${panel.ordinal} · ${panel.connectionName}`);
       label.setAttribute('aria-pressed',String(this.active()===panel));
       if(panel.meta.closed) label.classList.add('offline');
       const close=button('×',()=>this.close(id)); close.className='tab-close'; close.setAttribute('aria-label',`关闭终端 ${panel.ordinal}`);

@@ -4,6 +4,8 @@ import base64
 from collections import deque
 import errno
 import fcntl
+from hashlib import sha256
+import json
 import os
 from pathlib import Path
 import pwd
@@ -19,6 +21,7 @@ import threading
 import time
 
 from settings import DATA, ROOT, LOCAL_TERMINAL_ENABLED
+from catalog import USER, normalize_host, valid_host
 from ssh_login import PasswordTicket
 
 BOOT = base64.b64encode((ROOT / 'shell-integration.sh').read_bytes()).decode()
@@ -42,6 +45,25 @@ def pack(fields):
     return base64.b64encode(('\0'.join(fields) + '\0').encode())
 
 
+def routed_endpoint(root, route):
+    if not route:
+        return root
+    parent = sha256(json.dumps([root['id'], normalize_host(root['host']), root['port'], root['user']]).encode()).hexdigest()
+    via = [root['name']]
+    for hop in route.split('.'):
+        host, port, user, end = base64.b64decode(hop, validate=True).decode().split('\0')
+        port = int(port)
+        if end or not valid_host(host) or not 1 <= port <= 65535 or not USER.fullmatch(user):
+            raise ValueError('Invalid SSH endpoint')
+        host = normalize_host(host)
+        identifier = sha256(json.dumps([parent, host, port, user]).encode()).hexdigest()
+        endpoint = {'id': identifier, 'kind': 'nested', 'name': host[:60], 'host': host, 'port': port,
+                    'user': user, 'route': parent, 'via': ' → '.join(via)}
+        parent = identifier
+        via.append(host)
+    return endpoint
+
+
 class Terminal:
     def __init__(self, connection, on_close=None, on_event=None, login_password=None):
         local = connection.get('kind') == 'local'
@@ -50,6 +72,7 @@ class Terminal:
         self.id = secrets.token_urlsafe(16)
         self.nonce = secrets.token_hex(18)
         self.connection = dict(connection)
+        self.endpoint = self.connection
         self.on_close = on_close
         self.on_event = on_event
         self.condition = threading.Condition(threading.RLock())
@@ -70,7 +93,7 @@ class Terminal:
         self.login_ticket = None
         self.fd, slave = os.openpty()
         shell = 'exec /bin/bash --rcfile <(printf %s "$OW_BOOT" | base64 -d) -i'
-        launcher = f'OW_BOOT={BOOT} OW_NONCE={self.nonce} exec /bin/bash -c {shlex.quote(shell)}'
+        launcher = f'OW_ROUTE= OW_HOP_HOST= OW_BOOT={BOOT} OW_NONCE={self.nonce} exec /bin/bash -c {shlex.quote(shell)}'
         try:
             self.resize(120, 32)
             cwd = None
@@ -196,54 +219,70 @@ class Terminal:
                 pass
             data = data[end + 1:]
 
-    def remember(self, user, directory, status, script, switch_to=None):
+    def remember(self, endpoint, user, directory, status, script, switch_to=None):
         if script.strip() and len(script) <= 32000:
             entry = {'id': secrets.token_urlsafe(9), 'user': user, 'directory': directory,
-                     'exitCode': status, 'script': script}
+                     'exitCode': status, 'script': script, 'connection': endpoint['id']}
             if switch_to:
                 entry['switchTo'] = switch_to
             self.history.appendleft(entry)
             self.changed()
 
     def marker(self, fields):
-        if not fields:
+        if len(fields) < 2:
             return
-        event, *values = fields
+        route, event, *values = fields
+        endpoint = routed_endpoint(self.connection, route)
+        current_run = self.run if self.run and self.run['connection'] == endpoint['id'] else None
         if event == 'H' and len(values) == 4:
             user, directory, status, script = values
-            self.remember(user, directory, int(status), script)
+            self.remember(endpoint, user, directory, int(status), script)
         elif event == 'S' and len(values) == 4:
             user, directory, script, target = values
-            self.remember(user, directory, 0, script, target)
-            if self.run and self.run['phase'] == 'switching' and self.run['switchingTo'] == target:
-                self.run['switchAcknowledged'] = True
+            self.remember(endpoint, user, directory, 0, script, target)
+            if current_run and current_run['phase'] == 'switching' and current_run['switchingTo'] == target:
+                current_run['switchAcknowledged'] = True
         elif event == 'P' and len(values) == 2:
             if self.login_ticket:
                 self.login_ticket.close()
                 self.login_ticket = None
+            self.endpoint = endpoint
             self.context = {'user': values[0], 'directory': values[1]}
             self.ready = True
             self.changed()
-            if self.run and self.run['phase'] == 'running':
-                self.run['steps'][self.run['index']]['status'] = 'needs-review'
+            if not current_run and self.run and self.run['phase'] in ACTIVE:
+                self.pause('已进入另一台服务器。回到原连接后可重试或继续。')
+            elif current_run and current_run['phase'] == 'running':
+                current_run['steps'][current_run['index']]['status'] = 'needs-review'
                 self.pause('当前命令已中断，处理完后可重试或继续。')
-            elif self.run and self.run['phase'] == 'switching':
+            elif current_run and current_run['phase'] == 'switching':
                 self.finish_switch(values[0])
             else:
                 self.advance()
         elif event == 'D':
-            if self.run and self.run['phase'] == 'dispatch':
+            if current_run and current_run['phase'] == 'dispatch' and not current_run['payloadSent']:
                 current = self.run['steps'][self.run['index']]
                 payload = pack([self.run['ticket'], current['directory'], current['script']])
                 chunks = [payload[i:i + 1400] for i in range(0, len(payload), 1400)]
-                self.run['phase'] = 'running'
-                self.run['message'] = f"正在执行 {current['name']}"
-                current['status'] = 'running'
-                self.changed()
+                self.run['payloadSent'] = True
                 self.write(str(len(chunks)).encode() + b'\n' + b'\n'.join(chunks) + b'\n')
-        elif event == 'R' and len(values) == 2 and self.run and self.run['ticket'] == values[0]:
+        elif event == 'A' and current_run and current_run['phase'] == 'dispatch' and values == [current_run['ticket']]:
+            if not self.run['payloadSent']:
+                return
+            current = self.run['steps'][self.run['index']]
+            self.run['phase'] = 'running'
+            self.run['message'] = f"正在执行 {current['name']}"
+            current['status'] = 'running'
+            self.write(b'\r')
+            self.changed()
+        elif event == 'X' and len(values) == 1 and current_run and current_run['phase'] == 'dispatch':
+            self.run['steps'][self.run['index']]['status'] = 'failed'
+            self.run['ticket'] = None
+            self.pause(values[0])
+        elif event == 'R' and len(values) == 2 and current_run and current_run['ticket'] == values[0]:
             current = self.run['steps'][self.run['index']]
             status = int(values[1])
+            self.run['ticket'] = None
             current['exitCode'] = status
             current['status'] = 'succeeded' if status == 0 else 'failed'
             if self.run['takeover'] or self.run['phase'] == 'paused':
@@ -259,6 +298,8 @@ class Terminal:
         with self.condition:
             self.run = {'name': name, 'user': steps[0]['user'], 'steps': steps, 'index': 0,
                         'phase': 'connecting', 'message': '正在连接服务器', 'password': password,
+                        'id': secrets.token_urlsafe(12), 'finishedAt': None,
+                        'connection': self.endpoint['id'],
                         'takeover': False, 'ticket': None, 'switchTo': steps[0].get('switchTo') if len(steps) == 1 else None}
             self.changed()
             self.advance()
@@ -291,11 +332,12 @@ class Terminal:
 
     def advance(self):
         run = self.run
-        if not run or not self.ready or run['phase'] not in ('connecting', 'between'):
+        if not run or not self.ready or run['connection'] != self.endpoint['id'] or run['phase'] not in ('connecting', 'between'):
             return
         if run['index'] >= len(run['steps']):
             run['phase'] = 'succeeded'
             run['password'] = None
+            run['finishedAt'] = time.monotonic()
             run['message'] = f"已切换到 {run['switchTo']}" if run['switchTo'] else '流程完成'
             self.changed()
             return
@@ -314,6 +356,7 @@ class Terminal:
         self.ready = False
         run['phase'] = 'dispatch'
         run['ticket'] = secrets.token_hex(12)
+        run['payloadSent'] = False
         run['message'] = f"准备执行 {run['steps'][run['index']]['name']}"
         self.changed()
         self.write(DISPATCH)
@@ -348,7 +391,7 @@ class Terminal:
                     run['message'] = '已接管。当前命令仍在终端内。'
                     self.changed()
             elif action == 'end':
-                if run['phase'] in ('running', 'dispatch') or not self.ready:
+                if run['connection'] == self.endpoint['id'] and (run['phase'] in ('running', 'dispatch') or not self.ready):
                     self.write(b'\x03')
                 run['phase'] = 'ended'
                 run['ticket'] = None
@@ -358,6 +401,8 @@ class Terminal:
             elif action in ('retry', 'next'):
                 if run['phase'] != 'paused' or not self.ready or not self.context:
                     raise ValueError('请等当前命令返回到终端提示符')
+                if run['connection'] != self.endpoint['id']:
+                    raise ValueError('请先回到开始流程时的 SSH 连接')
                 expected = run['switchTo'] if action == 'next' and run['switchTo'] else run['user']
                 if self.context['user'] != expected:
                     raise ValueError(f'请先在终端切换到 {expected}')
@@ -381,11 +426,14 @@ class Terminal:
             run = None
             if self.run:
                 source = self.run
-                run = {key: source[key] for key in ('phase', 'name', 'index', 'message', 'takeover', 'user', 'switchTo')}
+                run = {key: source[key] for key in ('id', 'phase', 'name', 'index', 'message', 'takeover', 'user', 'switchTo', 'connection')}
+                if source['finishedAt'] is not None:
+                    run['completionAgeMs'] = int((time.monotonic() - source['finishedAt']) * 1000)
                 run['steps'] = [{key: step[key] for key in ('name', 'status')} for step in source['steps']]
-            return {'id': self.id, 'connection': self.connection['id'], 'revision': self.revision,
+            history = [entry for entry in self.history if entry['connection'] == self.endpoint['id']]
+            return {'id': self.id, 'connection': self.connection['id'], 'endpoint': self.endpoint, 'revision': self.revision,
                     'reset': after < self.floor, 'text': base64.b64encode(content).decode(), 'ready': self.ready,
-                    'closed': self.closed, 'context': self.context, 'history': list(self.history), 'run': run}
+                    'closed': self.closed, 'context': self.context, 'history': history, 'run': run}
 
     def close(self):
         with self.condition:

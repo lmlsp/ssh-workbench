@@ -59,6 +59,8 @@ def terminal_changed():
 def open_terminal(data):
     with TERM_LOCK:
         connection, password = STORE.login_connection(data.get('connection'))
+        if connection.get('kind') == 'nested':
+            raise ValueError('请从原终端内执行 SSH 进入这台服务器')
         if sum(not t.closed for t in TERMS.values()) >= MAX_TERMINALS:
             raise ValueError(f'终端已达到 {MAX_TERMINALS} 个，请关掉不用的连接')
         remaining = [t for t in TERMS.values() if t.closed]
@@ -81,9 +83,10 @@ def execute_on_terminal(data):
         with term.condition:
             if term.closed:
                 raise ValueError('选中的 SSH 终端已断开')
-            if any(term.connection[key] != connection[key] for key in ('id', 'host', 'port', 'user')):
+            if any(term.endpoint[key] != connection[key] for key in ('id', 'host', 'port', 'user')):
                 raise ValueError(f"请选择「{connection['name']}」的终端执行。连接配置已改动时，请重新连接。")
-            if any(not t.closed and t.run and t.run['phase'] in ACTIVE and t.connection['id'] == connection['id'] for t in TERMS.values()):
+            if any(not t.closed and t.run and t.run['phase'] in ACTIVE
+                   and (t is term or t.run['connection'] == connection['id']) for t in TERMS.values()):
                 raise ValueError('这个连接已有自动任务，请先处理该任务')
             if term.context is None:
                 raise ValueError('请先完成选中终端的 SSH 登录')
@@ -91,6 +94,20 @@ def execute_on_terminal(data):
                 raise ValueError('选中的终端正在执行命令或等待输入，请等命令提示符出现后再执行')
             term.begin(name, steps, password)
             return {'id': term.id}
+
+
+def save_operation(collection, data):
+    if collection != 'commands' or 'terminal' not in data:
+        return STORE.save(collection, data)
+    with TERM_LOCK:
+        term = TERMS.get(data['terminal'])
+        if not term:
+            raise ValueError('终端已不存在')
+        with term.condition:
+            endpoint = term.endpoint
+            if term.closed or endpoint.get('kind') != 'nested' or endpoint['id'] != data.get('connection'):
+                raise ValueError('请回到保存此指令的 SSH 连接')
+            return STORE.save(collection, data, nested=endpoint)
 
 
 def terminal_events(data):
@@ -134,8 +151,11 @@ def delete_configuration(data, preview):
             with term.condition:
                 managed = term.run and term.run['phase'] in ACTIVE
                 manual = term.context is not None and not term.ready
-                if not term.closed and (managed or manual):
-                    active.add(term.connection['id'])
+                if not term.closed:
+                    if managed:
+                        active.add(term.run['connection'])
+                    if manual:
+                        active.add(term.endpoint['id'])
         fingerprint = None if preview else data.get('fingerprint')
         if not preview and (not isinstance(fingerprint, str) or not re.fullmatch(r'[a-f0-9]{64}', fingerprint)):
             raise ValueError('请先查看需要删除的内容')
@@ -230,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
             elif post and path == '/api/logs':
                 self.respond(200, follow(STORE.current(), data.get('sources')))
             elif post and path in ('/api/connections', '/api/apps', '/api/commands', '/api/flows'):
-                self.respond(200, STORE.save(path.rsplit('/', 1)[1], data))
+                self.respond(200, save_operation(path.rsplit('/', 1)[1], data))
             elif post and path in ('/api/delete-preview', '/api/delete'):
                 self.respond(200, delete_configuration(data, preview=path.endswith('preview')))
             elif post and path == '/api/password':

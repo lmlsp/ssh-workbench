@@ -27,18 +27,32 @@ function select(node,options,current=node.value) {
   node.replaceChildren(...options.map(([id,label])=>new Option(label,id)));
   if(options.some(([id])=>id===current)) node.value=current;
 }
-function connectionOptions(includeLocal=true) {
-  return state.model.connections.filter(connection=>includeLocal||connection.kind!=='local')
-    .map(connection=>[connection.id,`${connection.name} · ${connection.user}`]);
+function connectionOption(connection) {
+  const via=connection.via?` · 经 ${connection.via}`:'';
+  return [connection.id,`${connection.name} · ${connection.user}${via}`];
 }
 function selectedConnection() {
-  const active=workspace.active()?.meta.connection;
-  if(active)return byId('connections',active);
+  const active=workspace.active();
+  if(active)return byId('connections',active.connectionId)||(active.packet?.endpoint?.kind==='nested'?active.packet.endpoint:undefined);
   return byId('connections',$('#terminal-connection').value)||state.model.connections.find(item=>item.kind==='local');
 }
 function byServer(collection,server) { return state.model[collection].filter(item=>byId('connections',item.connection)?.server===server); }
-function currentServer() { return byId('servers',workspace.active()?.meta.server || selectedConnection()?.server); }
-function endpoint(server) { return server.kind==='local'?`${server.host} · ${server.user}`:`${server.host}:${server.port}`; }
+function currentServer() {
+  const connection=selectedConnection();
+  return byId('servers',connection?.server)||(connection?.kind==='nested'?connection:undefined);
+}
+function endpoint(server) {
+  if(server.kind==='local')return `${server.host} · ${server.user}`;
+  const host=server.host.includes(':')?`[${server.host}]`:server.host;
+  return `${host}:${server.port}${server.via?` · 经 ${server.via}`:''}`;
+}
+
+function editInTerminal(collection,item={}) {
+  const active=workspace.active(), connection=selectedConnection();
+  const nested=connection?.kind==='nested'&&!byId('connections',connection.id)?connection:undefined;
+  openEditor(collection,{connection:connection?.id,user:active?.packet?.context?.user,...item,
+    nested,terminal:nested?active.meta.id:undefined});
+}
 
 function row(title,detail,actions) {
   const li=document.createElement('li'), words=document.createElement('div');
@@ -68,7 +82,7 @@ function operationRow(collection,item,manage=false) {
 
 function renderSidebar() {
   const server=currentServer(), active=workspace.active();
-  $('#sidebar-title').textContent=server?.name || active?.meta.connectionName || '当前服务器';
+  $('#sidebar-title').textContent=server?.name || active?.connectionName || '当前服务器';
   $('#sidebar-endpoint').textContent=server?endpoint(server):active?'已保存的连接已移除':'选择一个 SSH 连接';
   const user=active?.packet?.context?.user;
   message('#sidebar-target',active ? `终端 ${active.ordinal}${active.meta.closed?' · 已断开':user?' · '+user:''}` : '');
@@ -81,7 +95,7 @@ function renderSidebar() {
       if(entry.switchTo) {
         const note=document.createElement('p'); note.textContent=`已切换到 ${entry.switchTo}`; li.append(note);
       }
-      if(selectedConnection())li.append(button('保存为快捷指令',()=>openEditor('commands',{connection:active.meta.connection,user:entry.user,directory:entry.directory,script:entry.script})));
+      if(selectedConnection())li.append(button('保存为快捷指令',()=>editInTerminal('commands',{user:entry.user,directory:entry.directory,script:entry.script})));
       return li;
     }));
     message('#sidebar-empty',history.length?'':'执行过的命令会在终端返回提示符后显示。');
@@ -93,7 +107,7 @@ function renderSidebar() {
   if(server && !items.length) {
     const collection=state.side==='flows'&&byServer('commands',server.id).some(item=>!item.switchTo)?'flows':'commands';
     const item=document.createElement('li');
-    item.append(button(collection==='flows'?'新建自动化流程':'新建快捷指令',()=>openEditor(collection,{connection:selectedConnection()?.id})));
+    item.append(button(collection==='flows'?'新建自动化流程':'新建快捷指令',()=>editInTerminal(collection)));
     root.append(item);
   }
 }
@@ -111,7 +125,7 @@ function renderLibrary() {
 }
 
 function renderLists() {
-  const options=connectionOptions(false), selector=$('#library-server');
+  const options=state.model.connections.filter(connection=>!connection.kind).map(connectionOption), selector=$('#library-server');
   const local=state.model.connections.find(item=>item.kind==='local');
   const openLocal=$('#open-local-terminal');
   openLocal.hidden=!local;
@@ -134,11 +148,13 @@ function renderLists() {
       tools.append(button('打开本机终端',()=>connect(server.connections[0])));
       header.append(title,tools);section.append(header);return section;
     }
-    tools.append(button('添加登录账号',()=>openEditor('connections',{host:server.host,port:server.port})),deleteButton('删除服务器','servers',server.id));
+    if(server.kind!=='nested')tools.append(button('添加登录账号',()=>openEditor('connections',{host:server.host,port:server.port})));
+    tools.append(deleteButton('删除服务器','servers',server.id));
     header.append(title,tools);
     const list=document.createElement('ul'); list.className='items';
     list.append(...server.connections.map(id=>{const item=byId('connections',id); return row(item.name,item.passwordSet?`${item.user} · 已保存密码`:item.user,[
-      button('连接',()=>connect(item.id)),button('编辑',()=>openEditor('connections',item)),deleteButton('删除连接','connections',item.id),
+      ...(server.kind==='nested'?[]:[button('连接',()=>connect(item.id))]),
+      button('编辑',()=>openEditor('connections',item)),deleteButton('删除连接','connections',item.id),
     ]);}));
     section.append(header,list); return section;
   }));
@@ -185,7 +201,7 @@ async function execute(data) {
 function askRun(collection,item) {
   const panel=workspace.active();
   if(!panel || panel.meta.closed) return actionNotice('请先选中一个已连接的 SSH 终端。');
-  if(panel.meta.connection!==item.connection){
+  if(panel.connectionId!==item.connection){
     const connection=byId('connections',item.connection);
     return actionNotice(`请选择「${connection?.name || '对应 SSH 连接'}」的终端执行。`);
   }
@@ -195,7 +211,7 @@ function askRun(collection,item) {
   if(!Object.keys(fields).length){void execute({...data,params:{}}).catch(error=>actionNotice(error.message));return;}
   state.parameters=data;
   $('#parameters-title').textContent=item.name;
-  $('#parameters-terminal').textContent=`执行位置 · 终端 ${panel.ordinal} · ${panel.meta.connectionName}`;
+  $('#parameters-terminal').textContent=`执行位置 · 终端 ${panel.ordinal} · ${panel.connectionName}`;
   $('#parameters-inputs').replaceChildren(...Object.entries(fields).map(([key,label])=>{
     const wrap=document.createElement('label'),input=document.createElement('input');
     wrap.textContent=label;input.name=key;input.required=true;input.maxLength=4000;wrap.append(input);return wrap;
@@ -346,12 +362,15 @@ function openEditor(collection,item={}) {
   if($('#editor').open)return;
   const server=collection==='connections',command=collection==='commands',flow=collection==='flows';
   state.editor={collection,id:item.id,connection:item.connection,app:item.app||'',steps:[...(item.steps||[])],params:{...item.params},
-    passwordSet:!!item.passwordSet,secretTouched:false};
+    terminal:item.terminal,nested:item.nested,passwordSet:!!item.passwordSet,secretTouched:false};
   const defaultConnection=state.view==='library'?byId('servers',$('#library-server').value)?.connections[0]:selectedConnection()?.id;
   $('#editor-title').textContent=(item.id?'编辑':'新建')+(server?' SSH 连接':command?'快捷指令':'自动化流程');
-  $('#server-fields').hidden=!server;$('#ssh-password-fields').hidden=!server;$('#context-fields').hidden=server;$('#command-fields').hidden=!command;$('#flow-fields').hidden=!flow;
+  const nestedServer=server&&item.kind==='nested';
+  $('#server-fields').hidden=!server||nestedServer;$('#ssh-password-fields').hidden=!server||nestedServer;$('#context-fields').hidden=server;$('#command-fields').hidden=!command;$('#flow-fields').hidden=!flow;
   $('#parameter-fields').hidden=true;
-  select($('#edit-connection'),connectionOptions(),item.connection||defaultConnection||'');
+  const options=state.model.connections.map(connectionOption);
+  if(item.nested)options.push(connectionOption(item.nested));
+  select($('#edit-connection'),options,item.connection||defaultConnection||'');
   $('#edit-name').value=item.name||'';$('#edit-host').value=item.host||'';$('#edit-port').value=item.port||22;$('#edit-login-user').value=item.user||'';
   $('#edit-type').value=item.type||'';$('#edit-user').value=item.user||byId('connections',$('#edit-connection').value)?.user||'';
   $('#edit-directory').value=item.directory||'';$('#edit-script').value=item.script||'';
@@ -368,6 +387,7 @@ function readEditor() {
   if(editor.secretTouched)value.password=$(passwordControls[editor.collection].input).value;
   if(editor.collection==='connections')return {...value,host:$('#edit-host').value,port:Number($('#edit-port').value),user:$('#edit-login-user').value};
   value.connection=$('#edit-connection').value;
+  if(value.connection===editor.nested?.id)value.terminal=editor.terminal;
   value.app=value.connection===editor.connection?editor.app:'';value.type=$('#edit-type').value;
   if(editor.collection==='flows')return {...value,steps:editor.steps};
   return {...value,script:$('#edit-script').value,user:$('#edit-user').value,directory:$('#edit-directory').value,params:editor.params};

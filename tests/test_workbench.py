@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import auth
 import catalog
+from terminal import pack, routed_endpoint
 import workbench
 
 
@@ -100,6 +101,21 @@ class StoreTests(unittest.TestCase):
         a, b = self.command(first, 'Inspect'), self.command(second, 'Check')
         with self.assertRaises(ValueError):
             self.store.save('flows', {'name': 'Mixed', 'connection': first['id'], 'steps': [a['id'], b['id']]})
+
+    def test_nested_connections_save_by_login_path(self):
+        first = self.connection('First jump', 'one.example')
+        second = self.connection('Second jump', 'two.example')
+        hop = pack(['Host.EXAMPLE.', '2222', 'operator']).decode()
+        endpoint = routed_endpoint(first, hop)
+        self.assertEqual(endpoint, routed_endpoint(first, pack(['host.example', '2222', 'operator']).decode()))
+        self.assertNotEqual(endpoint['id'], routed_endpoint(second, hop)['id'])
+        self.assertNotEqual(catalog.server_id(endpoint), catalog.server_id(routed_endpoint(second, hop)))
+        for name in ('First command', 'Second command'):
+            self.store.save('commands', {'name': name, 'connection': endpoint['id'], 'user': 'appuser',
+                                         'directory': '/srv/app', 'script': 'pwd'}, nested=endpoint)
+        state = self.store.current()
+        self.assertEqual([row['id'] for row in state['connections'] if row.get('kind') == 'nested'], [endpoint['id']])
+        self.assertEqual({row['connection'] for row in state['commands']}, {endpoint['id']})
 
     def test_builtin_local_connection_is_opt_in_and_supports_persistent_commands(self):
         identifier = catalog.LOCAL_CONNECTION_ID
@@ -201,6 +217,7 @@ class SelectedTerminalTests(unittest.TestCase):
         self.steps = [{'script':'pwd', 'directory':'/srv/app', 'user':'operator'}]
         self.terminal = SimpleNamespace(id='selected', connection=dict(self.connection), closed=False, ready=True,
                                         context={'user':'operator'}, run=None, condition=threading.RLock(), begin=Mock())
+        self.terminal.endpoint = self.terminal.connection
         self.terms={'selected':self.terminal}
         self.addCleanup(patch.stopall)
         patch.object(workbench, 'TERMS', self.terms).start()
@@ -230,3 +247,10 @@ class SelectedTerminalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'先选中'):
             workbench.execute_on_terminal({'kind':'flow','id':'example'})
         self.new_terminal.assert_not_called()
+
+    def test_run_cannot_target_outer_connection_while_logged_into_nested_host(self):
+        hop = pack(['app.example', '22', 'operator']).decode()
+        self.terminal.endpoint = routed_endpoint(self.connection, hop)
+        with self.assertRaisesRegex(ValueError, '请选择'):
+            workbench.execute_on_terminal({'kind':'command','id':'example','terminal':'selected'})
+        self.terminal.begin.assert_not_called()

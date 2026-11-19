@@ -31,15 +31,30 @@ def local_connection():
             'port':None, 'user':pwd.getpwuid(os.geteuid()).pw_name}
 
 
+def normalize_host(host):
+    host = host.lower().rstrip('.')
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return host
+
+
+def valid_host(host):
+    if ':' in host:
+        try:
+            return '%' not in host and isinstance(ipaddress.ip_address(host), ipaddress.IPv6Address)
+        except ValueError:
+            return False
+    return bool(HOST.fullmatch(host))
+
+
 def server_id(connection):
     if connection.get('kind') == 'local':
         return LOCAL_CONNECTION_ID
-    host = connection['host'].lower().rstrip('.')
-    try:
-        host = str(ipaddress.ip_address(host))
-    except ValueError:
-        pass
-    endpoint = json.dumps([host, connection['port']])
+    location = [normalize_host(connection['host']), connection['port']]
+    if connection.get('kind') == 'nested':
+        location.append(connection['route'])
+    endpoint = json.dumps(location)
     return sha256(endpoint.encode()).hexdigest()[:32]
 
 
@@ -51,6 +66,8 @@ def groups(connections):
                                                 'host': connection['host'], 'port': connection['port'], 'connections': []})
         if connection.get('kind') == 'local':
             group.update(kind='local', user=connection['user'])
+        if connection.get('kind') == 'nested':
+            group.update(kind='nested', via=connection['via'])
         group['connections'].append(connection['id'])
     return list(result.values())
 
@@ -234,9 +251,11 @@ class Store:
             self.write(state)
             return summary
 
-    def save(self, collection, data):
+    def save(self, collection, data, nested=None):
         with self.lock:
             state = self.read()
+            if nested and not any(row['id'] == nested['id'] for row in state['connections']):
+                state['connections'].append(nested)
             identifier = data.get('id') or uuid4().hex
             if collection == 'connections' and identifier == LOCAL_CONNECTION_ID:
                 raise ValueError('本机终端使用工作台运行用户')
@@ -244,29 +263,33 @@ class Store:
             name = clean(data, 'name', 60)
             item = {'id': identifier, 'name': name}
             if collection == 'connections':
-                host = clean(data, 'host', 253)
-                user = clean(data, 'user', 65)
-                port = data.get('port')
-                if not HOST.fullmatch(host) or not USER.fullmatch(user) or type(port) is not int or not 1 <= port <= 65535:
-                    raise ValueError('SSH 主机、端口或用户格式不正确')
-                item.update(host=host, user=user, port=port)
-                changed_endpoint = previous and any(previous[key] != item[key] for key in ('host', 'port', 'user'))
-                password = data.get('password')
-                if password is not None:
-                    if (not isinstance(password, str) or len(password.encode()) > 512
-                            or any(ord(char) < 32 for char in password)):
-                        raise ValueError('SSH 登录密码的格式不正确')
-                    if password:
-                        item['secret'] = seal(identifier, password)
-                elif previous.get('secret') and not changed_endpoint:
-                    item['secret'] = previous['secret']
-                if changed_endpoint:
-                    for command in state['commands']:
-                        if command['connection'] == identifier:
-                            command.pop('secret', None)
+                if previous.get('kind') == 'nested':
+                    item = {**previous, 'name': name}
+                else:
+                    host = clean(data, 'host', 253)
+                    user = clean(data, 'user', 65)
+                    port = data.get('port')
+                    if not valid_host(host) or not USER.fullmatch(user) or type(port) is not int or not 1 <= port <= 65535:
+                        raise ValueError('SSH 主机、端口或用户格式不正确')
+                    item.update(host=host, user=user, port=port)
+                    changed_endpoint = previous and any(previous[key] != item[key] for key in ('host', 'port', 'user'))
+                    password = data.get('password')
+                    if password is not None:
+                        if (not isinstance(password, str) or len(password.encode()) > 512
+                                or any(ord(char) < 32 for char in password)):
+                            raise ValueError('SSH 登录密码的格式不正确')
+                        if password:
+                            item['secret'] = seal(identifier, password)
+                    elif previous.get('secret') and not changed_endpoint:
+                        item['secret'] = previous['secret']
+                    if changed_endpoint:
+                        for command in state['commands']:
+                            if command['connection'] == identifier:
+                                command.pop('secret', None)
             elif collection == 'apps':
                 connection = clean(data, 'connection', 64)
-                match(state, 'connections', connection)
+                if match(state, 'connections', connection).get('kind') == 'nested':
+                    raise ValueError('请在该终端内执行日志命令')
                 raw = data.get('sources')
                 if not isinstance(raw, list) or not 1 <= len(raw) <= 20:
                     raise ValueError('请填写至少一个日志文件')
