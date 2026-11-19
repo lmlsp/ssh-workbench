@@ -25,6 +25,9 @@ BIND_ADDRESS = os.environ.get('WORKBENCH_BIND_ADDRESS', '127.0.0.1')
 TLS_CERT = os.environ.get('WORKBENCH_TLS_CERT', '')
 TLS_KEY = os.environ.get('WORKBENCH_TLS_KEY', '')
 ALLOWED_NETWORKS = os.environ.get('WORKBENCH_ALLOWED_NETWORKS', '')
+ALLOW_HTTP = os.environ.get('WORKBENCH_ALLOW_HTTP') == '1'
+# A previous HTTPS Secure cookie must not shadow an HTTP session after a deployment switches transport.
+COOKIE_NAME = 'ssh_workbench_lan_http' if ALLOW_HTTP and not TLS_CERT else 'ssh_workbench'
 HOST = f'{BIND_ADDRESS}:{PORT}'
 ORIGIN = ('https://' if TLS_CERT else 'http://') + HOST
 STORE = Store()
@@ -175,7 +178,7 @@ class Handler(BaseHTTPRequestHandler):
     def authorized(self):
         try:
             jar = cookies.SimpleCookie(self.headers.get('Cookie', ''))
-            return SESSIONS.get(jar['ssh_workbench'].value, 0) > time.monotonic()
+            return SESSIONS.get(jar[COOKIE_NAME].value, 0) > time.monotonic()
         except (KeyError, cookies.CookieError):
             return False
 
@@ -208,7 +211,7 @@ class Handler(BaseHTTPRequestHandler):
                     for old in [key for key, expiry in SESSIONS.items() if expiry <= now]:
                         del SESSIONS[old]
                     SESSIONS[token] = now + 8 * 60 * 60
-                cookie = f'ssh_workbench={token}; Path=/; SameSite=Strict; HttpOnly'
+                cookie = f'{COOKIE_NAME}={token}; Path=/; SameSite=Strict; HttpOnly'
                 self.respond(200, {'ok': True}, cookie=cookie + ('; Secure' if TLS_CERT else ''))
                 return
             if not self.authorized():
@@ -285,15 +288,18 @@ class Handler(BaseHTTPRequestHandler):
         self.route(post=True)
 
 
-def listener_options(address, certificate, key, allowed):
+def listener_options(address, certificate, key, allowed, allow_http=False):
     bind = IPv4Address(address)
     if bind.is_unspecified or bind.is_multicast or int(bind) == 0xffffffff:
         raise ValueError('Set a specific IPv4 address for WORKBENCH_BIND_ADDRESS')
     if bool(certificate) != bool(key):
         raise ValueError('Set both WORKBENCH_TLS_CERT and WORKBENCH_TLS_KEY')
     networks = tuple(IPv4Network(item.strip()) for item in allowed.split(',') if item.strip())
-    if not bind.is_loopback and (not certificate or not networks):
-        raise ValueError('LAN access requires HTTPS and WORKBENCH_ALLOWED_NETWORKS')
+    if not bind.is_loopback:
+        if not networks:
+            raise ValueError('LAN access requires WORKBENCH_ALLOWED_NETWORKS')
+        if not certificate and not allow_http:
+            raise ValueError('LAN access requires HTTPS or an explicit WORKBENCH_ALLOW_HTTP=1 setting')
     context = None
     if certificate:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -344,7 +350,7 @@ def main():
     if not (ROOT / 'ui/node_modules/@xterm/xterm/lib/xterm.js').is_file():
         parser.error('Run npm ci --prefix ui first')
     try:
-        tls, networks = listener_options(BIND_ADDRESS, TLS_CERT, TLS_KEY, ALLOWED_NETWORKS)
+        tls, networks = listener_options(BIND_ADDRESS, TLS_CERT, TLS_KEY, ALLOWED_NETWORKS, ALLOW_HTTP)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     server = WorkbenchServer((BIND_ADDRESS, PORT), Handler, tls, networks)

@@ -21,6 +21,8 @@ python workbench.py
 
 内网主机可用 `WORKBENCH_BIND_ADDRESS` 选择一个具体的 IPv4 地址，`WORKBENCH_ALLOWED_NETWORKS` 填允许访问的 IPv4 CIDR（多项用逗号分隔），并通过 `WORKBENCH_TLS_CERT` 和 `WORKBENCH_TLS_KEY` 指定 HTTPS 证书和私钥。证书应覆盖访问 IP。内网模式仍使用单个管理员账户。
 
+选择明文 HTTP 时，保留具体绑定 IP 和允许访问的网段，设置 `WORKBENCH_ALLOW_HTTP=1`，并留空 TLS 证书和私钥配置。这时浏览器到工作台的连接为 HTTP。
+
 ## 使用方式
 
 1. 在「服务器」保存 SSH 主机、端口和登录用户。同一主机与 SSH 端口下的不同账号归在同一组。登录密钥和 SSH 配置沿用当前系统用户的 OpenSSH 配置，也可在连接编辑页保存加密的 SSH 登录密码。首次连接新主机时仍需在终端核对指纹。SSH 登录密码和快捷指令的 `su` 密码分开设置。
