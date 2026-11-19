@@ -101,6 +101,24 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.save('flows', {'name': 'Mixed', 'connection': first['id'], 'steps': [a['id'], b['id']]})
 
+    def test_builtin_local_connection_is_opt_in_and_supports_persistent_commands(self):
+        identifier = catalog.LOCAL_CONNECTION_ID
+        with patch.object(catalog, 'LOCAL_TERMINAL_ENABLED', False):
+            self.assertRaises(ValueError, self.store.login_connection, identifier)
+        with patch.object(catalog, 'LOCAL_TERMINAL_ENABLED', True):
+            connection, password = self.store.login_connection(identifier)
+            self.assertEqual(connection['kind'], 'local')
+            self.assertIsNone(password)
+            self.assertEqual(self.store.current()['servers'][0]['id'], identifier)
+            saved = self.store.save('commands', {'name':'Inspect local', 'connection':identifier,
+                                                 'user':connection['user'], 'directory':'/tmp', 'script':'pwd'})
+            name, selected, steps, _ = self.store.plan('command', saved['id'], {})
+            self.assertEqual(name, 'Inspect local')
+            self.assertEqual(selected['id'], identifier)
+            self.assertEqual(steps[0]['script'], 'pwd')
+            self.assertRaises(ValueError, self.store.deletion, 'connections', identifier)
+            self.assertNotIn('"connections": [{', catalog.STATE.read_text())
+
     def test_switch_shortcut_uses_literal_target_and_clears_password_when_target_changes(self):
         node = self.connection('App', 'app.example')
         switch = self.command(node, 'Switch account', script='su - "deploy"', password='example-only-password')

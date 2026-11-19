@@ -27,13 +27,18 @@ function select(node,options,current=node.value) {
   node.replaceChildren(...options.map(([id,label])=>new Option(label,id)));
   if(options.some(([id])=>id===current)) node.value=current;
 }
-function connectionOptions() {
-  return state.model.connections.map(connection=>[connection.id,`${connection.name} · ${connection.user}`]);
+function connectionOptions(includeLocal=true) {
+  return state.model.connections.filter(connection=>includeLocal||connection.kind!=='local')
+    .map(connection=>[connection.id,`${connection.name} · ${connection.user}`]);
 }
-function selectedConnection() { return byId('connections',workspace.active()?.meta.connection || $('#terminal-connection').value); }
+function selectedConnection() {
+  const active=workspace.active()?.meta.connection;
+  if(active)return byId('connections',active);
+  return byId('connections',$('#terminal-connection').value)||state.model.connections.find(item=>item.kind==='local');
+}
 function byServer(collection,server) { return state.model[collection].filter(item=>byId('connections',item.connection)?.server===server); }
 function currentServer() { return byId('servers',workspace.active()?.meta.server || selectedConnection()?.server); }
-function endpoint(server) { return `${server.host}:${server.port}`; }
+function endpoint(server) { return server.kind==='local'?`${server.host} · ${server.user}`:`${server.host}:${server.port}`; }
 
 function row(title,detail,actions) {
   const li=document.createElement('li'), words=document.createElement('div');
@@ -106,19 +111,29 @@ function renderLibrary() {
 }
 
 function renderLists() {
-  const options=connectionOptions(), selector=$('#library-server');
+  const options=connectionOptions(false), selector=$('#library-server');
+  const local=state.model.connections.find(item=>item.kind==='local');
+  const openLocal=$('#open-local-terminal');
+  openLocal.hidden=!local;
+  if(local)openLocal.onclick=()=>connect(local.id);
+  openLocal.classList.toggle('primary',!options.length);
   $('#head-status').textContent=`${state.model.servers.length} 台服务器`;
   select($('#terminal-connection'),options);
-  const hasConnections=options.length>0;
+  const hasConnections=state.model.connections.length>0;
   $('#terminal-empty').hidden=hasConnections;
   $('#servers-empty').hidden=hasConnections;
-  $('#attach-form button[type="submit"]').disabled=!hasConnections;
+  $('#attach-form').hidden=Boolean(local)&&!options.length;
+  $('#attach-form button[type="submit"]').disabled=!options.length;
   select(selector,state.model.servers.map(server=>[server.id,server.name]),selector.value||currentServer()?.id||'');
   $('#server-list').replaceChildren(...state.model.servers.map(server=>{
     const section=document.createElement('section'); section.className='server-group'; section.dataset.server=server.id;
     const header=document.createElement('header'), title=document.createElement('div'), heading=document.createElement('h2'), address=document.createElement('p');
     heading.textContent=server.name; address.textContent=endpoint(server); title.append(heading,address);
     const tools=document.createElement('div'); tools.className='actions';
+    if(server.kind==='local') {
+      tools.append(button('打开本机终端',()=>connect(server.connections[0])));
+      header.append(title,tools);section.append(header);return section;
+    }
     tools.append(button('添加登录账号',()=>openEditor('connections',{host:server.host,port:server.port})),deleteButton('删除服务器','servers',server.id));
     header.append(title,tools);
     const list=document.createElement('ul'); list.className='items';

@@ -40,7 +40,7 @@
       <div class="page-heading"><div><h1>终端工作区</h1><p>拖动窗口右下角调节大小。</p></div></div>
       <div class="terminal-toolbar">
         <form id="attach-form" class="connect-line"><label for="terminal-connection">SSH 连接</label><select id="terminal-connection"></select><button class="primary" type="submit">添加窗口</button></form>
-        <button type="button" id="toggle-split" aria-pressed="false" disabled>平铺窗口</button>
+        <div class="actions"><button type="button" id="open-local-terminal" hidden>本机终端</button><button type="button" id="toggle-split" aria-pressed="false" disabled>平铺窗口</button></div>
       </div>
       <p id="terminal-empty" hidden>先在「服务器」添加一个 SSH 连接。</p>
       <div class="terminal-desk">

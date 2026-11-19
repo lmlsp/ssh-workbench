@@ -8,6 +8,7 @@ import stat
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get('WORKBENCH_DATA_DIR', ROOT / '.data')).expanduser().resolve()
 PORT = int(os.environ.get('WORKBENCH_PORT', '14441'))
+LOCAL_TERMINAL_ENABLED = os.environ.get('WORKBENCH_ENABLE_LOCAL_TERMINAL') == '1' and os.geteuid() != 0
 
 
 def setup_data():

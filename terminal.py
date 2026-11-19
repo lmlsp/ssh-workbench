@@ -6,6 +6,7 @@ import errno
 import fcntl
 import os
 from pathlib import Path
+import pwd
 import re
 import secrets
 import shlex
@@ -17,7 +18,7 @@ import termios
 import threading
 import time
 
-from settings import DATA, ROOT
+from settings import DATA, ROOT, LOCAL_TERMINAL_ENABLED
 from ssh_login import PasswordTicket
 
 BOOT = base64.b64encode((ROOT / 'shell-integration.sh').read_bytes()).decode()
@@ -43,6 +44,9 @@ def pack(fields):
 
 class Terminal:
     def __init__(self, connection, on_close=None, on_event=None, login_password=None):
+        local = connection.get('kind') == 'local'
+        if local and not LOCAL_TERMINAL_ENABLED:
+            raise ValueError('本机终端尚未启用')
         self.id = secrets.token_urlsafe(16)
         self.nonce = secrets.token_hex(18)
         self.connection = dict(connection)
@@ -65,24 +69,32 @@ class Terminal:
         self.secret_consumed = False
         self.login_ticket = None
         self.fd, slave = os.openpty()
-        remote = 'exec /bin/bash --rcfile <(printf %s "$OW_BOOT" | base64 -d) -i'
-        launcher = f'OW_BOOT={BOOT} OW_NONCE={self.nonce} exec /bin/bash -c {shlex.quote(remote)}'
+        shell = 'exec /bin/bash --rcfile <(printf %s "$OW_BOOT" | base64 -d) -i'
+        launcher = f'OW_BOOT={BOOT} OW_NONCE={self.nonce} exec /bin/bash -c {shlex.quote(shell)}'
         try:
             self.resize(120, 32)
-            args = ssh_args(connection, True)
+            cwd = None
             env = {**os.environ, 'TERM':'xterm-256color'}
-            if login_password:
-                self.login_ticket = PasswordTicket(connection['user'], login_password)
-                # Without a controlling TTY, even older OpenSSH invokes SSH_ASKPASS for authentication.
-                env.update(DISPLAY=':0', SSH_ASKPASS=str(ROOT/'ssh-askpass.py'), SSH_ASKPASS_REQUIRE='force',
-                           WORKBENCH_SSH_PTY=os.ttyname(slave), WORKBENCH_SSH_USER=connection['user'],
-                           WORKBENCH_SSH_TICKET=self.login_ticket.path)
-                args[2:2] = ['-o','ForwardX11=no','-o','NumberOfPasswordPrompts=1']
+            if local:
+                account = pwd.getpwuid(os.geteuid())
+                cwd = account.pw_dir
+                env = {name:os.environ[name] for name in ('PATH','LANG','LC_ALL','LC_CTYPE','TZ') if name in os.environ}
+                env.update(HOME=cwd, USER=account.pw_name, LOGNAME=account.pw_name, SHELL='/bin/bash', TERM='xterm-256color')
+                args = [sys.executable, str(ROOT/'pty-child.py'), '/bin/bash', '-c']
             else:
-                args = [sys.executable, str(ROOT/'pty-child.py'), *args]
+                args = ssh_args(connection, True)
+                if login_password:
+                    self.login_ticket = PasswordTicket(connection['user'], login_password)
+                    # Without a controlling TTY, even older OpenSSH invokes SSH_ASKPASS for authentication.
+                    env.update(DISPLAY=':0', SSH_ASKPASS=str(ROOT/'ssh-askpass.py'), SSH_ASKPASS_REQUIRE='force',
+                               WORKBENCH_SSH_PTY=os.ttyname(slave), WORKBENCH_SSH_USER=connection['user'],
+                               WORKBENCH_SSH_TICKET=self.login_ticket.path)
+                    args[2:2] = ['-o','ForwardX11=no','-o','NumberOfPasswordPrompts=1']
+                else:
+                    args = [sys.executable, str(ROOT/'pty-child.py'), *args]
             self.process = subprocess.Popen([*args, launcher],
                                             stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
-                                            env=env)
+                                            env=env, cwd=cwd)
         except BaseException:
             os.close(self.fd)
             if self.login_ticket:

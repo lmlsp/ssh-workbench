@@ -5,15 +5,17 @@ from hashlib import sha256
 import ipaddress
 import json
 import os
+import pwd
 import re
 import secrets
 import shlex
+import socket
 import threading
 from uuid import uuid4
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from settings import DATA
+from settings import DATA, LOCAL_TERMINAL_ENABLED
 
 STATE = DATA / 'workbench.json'
 KEY = DATA / 'workbench.key'
@@ -21,9 +23,17 @@ USER = re.compile(r'[a-zA-Z_][a-zA-Z0-9_.-]{0,63}\$?')
 HOST = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9.:-]{0,251}')
 PARAM = re.compile(r'\{\{([a-zA-Z][a-zA-Z0-9_]{0,31})\}\}')
 DELETABLE = ('servers', 'connections', 'commands', 'flows')
+LOCAL_CONNECTION_ID = 'builtin-local'
+
+
+def local_connection():
+    return {'id':LOCAL_CONNECTION_ID, 'kind':'local', 'name':'本机终端', 'host':socket.gethostname(),
+            'port':None, 'user':pwd.getpwuid(os.geteuid()).pw_name}
 
 
 def server_id(connection):
+    if connection.get('kind') == 'local':
+        return LOCAL_CONNECTION_ID
     host = connection['host'].lower().rstrip('.')
     try:
         host = str(ipaddress.ip_address(host))
@@ -39,6 +49,8 @@ def groups(connections):
         identifier = server_id(connection)
         group = result.setdefault(identifier, {'id': identifier, 'name': connection['name'],
                                                 'host': connection['host'], 'port': connection['port'], 'connections': []})
+        if connection.get('kind') == 'local':
+            group.update(kind='local', user=connection['user'])
         group['connections'].append(connection['id'])
     return list(result.values())
 
@@ -165,7 +177,11 @@ class Store:
         self.lock = threading.RLock()
 
     def read(self):
-        return json.loads(STATE.read_text()) if STATE.exists() else initial()
+        state = json.loads(STATE.read_text()) if STATE.exists() else initial()
+        state['connections'] = [item for item in state['connections'] if item['id'] != LOCAL_CONNECTION_ID and item.get('kind') != 'local']
+        if LOCAL_TERMINAL_ENABLED:
+            state['connections'].append(local_connection())
+        return state
 
     def current(self):
         with self.lock:
@@ -179,6 +195,8 @@ class Store:
         """Preview or apply an atomic deletion, including only the dependencies shown."""
         if collection not in DELETABLE:
             raise ValueError('请选择要删除的服务器、连接、快捷指令或流程')
+        if collection in ('servers', 'connections') and identifier == LOCAL_CONNECTION_ID:
+            raise ValueError('本机终端由部署设置提供')
         with self.lock:
             state = self.read()
             target = match({**state, 'servers': groups(state['connections'])}, collection, identifier)
@@ -220,6 +238,8 @@ class Store:
         with self.lock:
             state = self.read()
             identifier = data.get('id') or uuid4().hex
+            if collection == 'connections' and identifier == LOCAL_CONNECTION_ID:
+                raise ValueError('本机终端使用工作台运行用户')
             previous = match(state, collection, identifier) if data.get('id') else {}
             name = clean(data, 'name', 60)
             item = {'id': identifier, 'name': name}
@@ -310,7 +330,8 @@ class Store:
 
     def write(self, state):
         draft = STATE.with_suffix('.tmp')
-        draft.write_text(json.dumps(state, ensure_ascii=False))
+        saved = {**state, 'connections':[item for item in state['connections'] if item['id'] != LOCAL_CONNECTION_ID]}
+        draft.write_text(json.dumps(saved, ensure_ascii=False))
         draft.chmod(0o600)
         draft.replace(STATE)
 
