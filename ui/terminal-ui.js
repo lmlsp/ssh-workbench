@@ -126,6 +126,7 @@ class TerminalPanel {
   dispose() {
     clearTimeout(this.inputTimer);
     clearTimeout(this.sizeTimer);
+    clearTimeout(this.completionTimer);
     this.observer?.disconnect();
     this.terminal?.dispose();
     this.node.remove();
@@ -173,6 +174,7 @@ class TerminalPanel {
 
   render(packet) {
     const oldPhase = this.packet?.run?.phase;
+    const oldRunId = this.packet?.run?.id;
     const oldHistory = this.packet?.history?.[0]?.id;
     const oldUser = this.packet?.context?.user;
     this.packet = packet;
@@ -182,7 +184,20 @@ class TerminalPanel {
     $('.term-context',this.node).textContent = packet.closed ? 'SSH 已断开' : context
       ? `${packet.run ? this.meta.connectionName+' · ' : ''}${context.user} · ${context.directory}` : '正在连接。请在终端处理 SSH 提示。';
     const run = packet.run;
-    $('.run-info',this.node).hidden = !run;
+    const summary=$('.run-info',this.node);
+    const complete=run?.phase==='succeeded';
+    if(!complete){clearTimeout(this.completionTimer);this.completionExpired=false;}
+    if(complete && (oldPhase!=='succeeded'||oldRunId!==run.id)) {
+      clearTimeout(this.completionTimer);
+      const finished=Number.isFinite(run.finishedAt)?run.finishedAt:Date.now();
+      const remaining=Math.max(0,Math.min(5000,finished+5000-Date.now()));
+      this.completionExpired=remaining===0;
+      if(remaining)this.completionTimer=setTimeout(()=>{
+        this.completionExpired=true;summary.hidden=true;
+      },remaining);
+    }
+    summary.classList.toggle('run-complete',complete);
+    summary.hidden=!run || complete && this.completionExpired;
     if (run) {
       const statuses = {pending:'待执行',running:'执行中',succeeded:'通过',failed:'失败',manual:'手工完成','needs-review':'待核对'};
       $('.run-message',this.node).textContent = run.message;

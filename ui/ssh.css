@@ -78,6 +78,8 @@
 .run-info p { margin:0; color:#29466e; font-weight:650; font-size:.9rem; }
 .run-info ol { display:flex; flex-wrap:wrap; gap:4px 20px; margin:4px 0; padding-left:20px; font-size:.78rem; color:#495e79; }
 .run-info li[data-status=failed] { color:var(--error); }.run-info li[data-status=succeeded] { color:var(--success); }
+.run-info.run-complete .run-steps,.run-info.run-complete .run-controls { display:none; }
+.run-info.run-complete p { color:var(--success); }
 .run-info button { font-size:.78rem; min-height:28px; padding:3px 7px; }
 .server-groups { display:grid; gap:12px; }
 .server-group { border:1px solid var(--line); border-radius:10px; background:var(--paper); min-width:0; overflow:hidden; }
