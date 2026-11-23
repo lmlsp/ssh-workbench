@@ -6,9 +6,11 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import IPv4Address, IPv4Network
 import json
+import logging
 import os
 import re
 import secrets
+import sqlite3
 import ssl
 import threading
 import time
@@ -17,7 +19,8 @@ from urllib.parse import parse_qs, urlsplit
 from catalog import Store, match, server_id
 from auth import AUTH, set_password, verify
 from multi_logs import follow
-from settings import PORT, ROOT, setup_data
+from settings import DATA, PORT, ROOT, setup_data
+from run_log import RunLog
 from terminal import ACTIVE, Terminal
 
 
@@ -31,6 +34,7 @@ COOKIE_NAME = 'ssh_workbench_lan_http' if ALLOW_HTTP and not TLS_CERT else 'ssh_
 HOST = f'{BIND_ADDRESS}:{PORT}'
 ORIGIN = ('https://' if TLS_CERT else 'http://') + HOST
 STORE = Store()
+RUN_LOG = RunLog(DATA / 'run-log.sqlite3')
 SESSIONS = {}
 TERM_LOCK = threading.RLock()
 TERMS = {}
@@ -56,6 +60,26 @@ def terminal_changed():
         TERMINAL_EVENTS.notify_all()
 
 
+def record_run(entry):
+    try:
+        RUN_LOG.save(entry)
+    except (OSError, sqlite3.Error):
+        logging.exception('Could not save workbench run results')
+
+
+def recent_runs(before):
+    with TERM_LOCK:
+        result = RUN_LOG.page(before)
+        live_ids = {term.run['id'] for term in TERMS.values() if term.run}
+    for entry in result['runs']:
+        if entry['phase'] in ACTIVE and entry['id'] not in live_ids:
+            entry.update(phase='disconnected', message='工作台会话已结束，请在服务器核对步骤结果。')
+            for step in entry['steps']:
+                if step['status'] == 'running':
+                    step['status'] = 'needs-review'
+    return result
+
+
 def open_terminal(data):
     with TERM_LOCK:
         connection, password = STORE.login_connection(data.get('connection'))
@@ -66,7 +90,8 @@ def open_terminal(data):
         remaining = [t for t in TERMS.values() if t.closed]
         for old in remaining[:-12]:
             TERMS.pop(old.id, None)
-        term = Terminal(connection, on_event=terminal_changed, login_password=password, ssh_password=STORE.ssh_password)
+        term = Terminal(connection, on_event=terminal_changed, login_password=password, ssh_password=STORE.ssh_password,
+                        on_run=record_run)
         TERMS[term.id] = term
         return {'id': term.id}
 
@@ -80,20 +105,27 @@ def execute_on_terminal(data):
         if kind not in ('command', 'flow'):
             raise ValueError('请选择快捷指令或流程')
         name, connection, steps, password = STORE.plan(kind, data.get('id'), data.get('params') or {},
-                                                       data.get('groups'), data.get('groupParams'))
+                                                       data.get('groups'), data.get('groupParams'), data.get('revision'))
         with term.condition:
             if term.closed:
                 raise ValueError('选中的 SSH 终端已断开')
             if any(term.endpoint[key] != connection[key] for key in ('id', 'host', 'port', 'user')):
                 raise ValueError(f"请选择「{connection['name']}」的终端执行。连接配置已改动时，请重新连接。")
-            if any(not t.closed and t.run and t.run['phase'] in ACTIVE
-                   and (t is term or t.run['connection'] == connection['id']) for t in TERMS.values()):
-                raise ValueError('这个连接已有自动任务，请先处理该任务')
+            replacement = (term.ready and term.run and term.run['phase'] == 'paused'
+                           and term.run['connection'] == connection['id'] and term.run['id'] == data.get('replaceRun'))
+            busy = next((t.run for t in TERMS.values() if not t.closed and t.run and t.run['phase'] in ACTIVE
+                         and (t is term or t.run['connection'] == connection['id'])
+                         and not (t is term and replacement)), None)
+            if busy:
+                step = busy['steps'][min(busy['index'], len(busy['steps']) - 1)]['name']
+                raise ValueError(f"「{busy['name']}」正在处理「{step}」。请等步骤返回或先结束流程。")
             if term.context is None:
                 raise ValueError('请先完成选中终端的 SSH 登录')
             if not term.ready:
                 raise ValueError('选中的终端正在执行命令或等待输入，请等命令提示符出现后再执行')
-            term.begin(name, steps, password)
+            if replacement:
+                term.control('end')
+            term.begin(name, steps, password, kind)
             return {'id': term.id}
 
 
@@ -240,6 +272,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not post and path == '/api/state':
                 self.respond(200, STORE.current())
+            elif not post and path == '/api/run-log':
+                query = parse_qs(parsed.query)
+                before = int(query['before'][0]) if 'before' in query else None
+                if before is not None and not 0 < before < 2**63:
+                    raise ValueError('无效的执行日志位置')
+                self.respond(200, recent_runs(before))
             elif not post and path == '/api/terminals':
                 self.respond(200, terminal_list())
             elif post and path == '/api/terminal':
@@ -296,7 +334,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(404, {'error': '找不到页面'}, head=head)
         except (ValueError, AttributeError, TypeError) as exc:
             self.respond(400, {'error': str(exc)}, head=head)
-        except OSError:
+        except (OSError, sqlite3.Error):
             self.respond(503, {'error': '连接断开或本机服务暂不可用'}, head=head)
 
     def do_GET(self):

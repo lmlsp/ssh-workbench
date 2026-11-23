@@ -19,6 +19,7 @@
       <nav class="navigation" id="workbench-navigation" aria-label="工作台" hidden>
         <button data-view="terminal" aria-current="page">终端</button>
         <button data-view="library">快捷指令与流程</button>
+        <button data-view="run-log">执行日志</button>
         <button data-view="servers">服务器</button>
       </nav>
       <span class="machine" id="head-status"></span>
@@ -73,6 +74,13 @@
       <div class="library-lists"><section><h2>流程</h2><ul class="items" id="flow-list"></ul></section><section><h2>快捷指令</h2><ul class="items" id="command-list"></ul></section></div>
     </section>
 
+    <section id="view-run-log" class="view" hidden>
+      <div class="page-heading"><h1>执行日志</h1><button id="refresh-run-log">刷新</button></div>
+      <p id="run-log-empty" hidden>执行快捷指令或流程后，结果会显示在这里。</p>
+      <ol id="run-log-list" class="run-log-list"></ol>
+      <button id="more-run-log" hidden>加载更早的记录</button>
+    </section>
+
     <section id="view-servers" class="view" hidden>
       <div class="page-heading"><div><h1>服务器</h1><p>同一主机和 SSH 端口下，可以保存多个登录账号。</p></div><button class="primary" id="add-server">添加 SSH 连接</button></div>
       <p id="servers-empty" hidden>还没有连接。添加第一条 SSH 连接后就可以打开终端。</p>
@@ -109,7 +117,17 @@
     <p class="error" id="editor-error" role="alert" hidden></p><div class="actions dialog-actions"><button type="button" id="cancel-edit">取消</button><button class="primary" type="submit" id="save">保存</button></div>
   </form></dialog>
 
-  <dialog id="parameters" class="editor-dialog"><form id="parameters-form"><h2 id="parameters-title"></h2><p id="parameters-terminal"></p><fieldset id="run-groups" hidden><legend>选择本次要运行的分组</legend><div id="run-group-options"></div></fieldset><div id="parameters-inputs"></div><p class="error" id="parameters-error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-run" type="button">取消</button><button class="primary" type="submit">开始执行</button></div></form></dialog>
+  <dialog id="parameters" class="editor-dialog"><form id="parameters-form">
+    <h2 id="parameters-title"></h2><p id="parameters-terminal"></p>
+    <fieldset id="run-groups" hidden><legend>选择本次要运行的分组</legend><div id="run-group-options"></div></fieldset>
+    <section id="run-preview" class="run-preview" hidden aria-label="本次执行步骤">
+      <strong id="run-preview-caption"></strong><ol id="run-preview-steps"></ol>
+    </section>
+    <div id="parameters-inputs"></div>
+    <p id="parameters-blocked" class="run-availability" role="status" hidden></p>
+    <p class="error" id="parameters-error" role="alert" hidden></p>
+    <div class="actions dialog-actions"><button id="cancel-run" type="button">取消</button><button class="primary" type="submit">开始执行</button></div>
+  </form></dialog>
 
   <dialog id="delete-dialog" class="editor-dialog"><form id="delete-form"><h2 id="delete-title"></h2><p id="delete-message"></p><ul id="delete-items"></ul><p id="delete-error" class="error" role="alert" hidden></p><div class="actions dialog-actions"><button id="cancel-delete" type="button">取消</button><button id="confirm-delete" type="submit" class="danger-fill">确认删除</button></div></form></dialog>
 

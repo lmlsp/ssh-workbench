@@ -206,11 +206,10 @@ class TerminalPanel {
     summary.classList.toggle('run-complete',complete);
     summary.hidden=!run || complete && this.completionExpired;
     if (run) {
-      const statuses = {pending:'待执行',running:'执行中',succeeded:'通过',failed:'失败',manual:'手工完成','needs-review':'待核对'};
       $('.run-message',this.node).textContent = run.message;
       $('.run-steps',this.node).replaceChildren(...run.steps.map(step => {
         const item=document.createElement('li'); item.dataset.status=step.status;
-        item.textContent=`${step.name} · ${statuses[step.status]}`; return item;
+        item.textContent=`${step.name} · ${runStatus[step.status]}`; return item;
       }));
       $('[data-action="takeover"]',this.node).hidden = !activePhases.includes(run.phase) || run.takeover || run.phase === 'paused';
       for (const action of ['retry','next']) {
@@ -221,6 +220,7 @@ class TerminalPanel {
       $('[data-action="end"]',this.node).hidden = !activePhases.includes(run.phase);
     }
     if (packet.closed || oldPhase !== run?.phase || changedConnection) this.workspace.drawTabs();
+    if ($('#parameters').open && state.parameters?.data.terminal===packet.id) updateRunAvailability();
     const newest = packet.history?.[0];
     if (this.workspace.active() === this) {
       const changedHistory=oldHistory!==newest?.id;

@@ -65,7 +65,7 @@ def routed_endpoint(root, route):
 
 
 class Terminal:
-    def __init__(self, connection, on_close=None, on_event=None, login_password=None, ssh_password=None):
+    def __init__(self, connection, on_close=None, on_event=None, login_password=None, ssh_password=None, on_run=None):
         local = connection.get('kind') == 'local'
         if local and not LOCAL_TERMINAL_ENABLED:
             raise ValueError('本机终端尚未启用')
@@ -76,6 +76,7 @@ class Terminal:
         self.ssh_password = ssh_password
         self.on_close = on_close
         self.on_event = on_event
+        self.on_run = on_run
         self.condition = threading.Condition(threading.RLock())
         self.output = deque()
         self.size = 0
@@ -147,6 +148,16 @@ class Terminal:
         if self.on_event:
             self.on_event()
 
+    def run_changed(self):
+        if self.on_run:
+            run = self.run
+            self.on_run({
+                **{key: run[key] for key in ('id', 'kind', 'name', 'phase', 'message', 'user', 'startedAt', 'target')},
+                'steps': [{key: step[key] for key in ('name', 'group', 'directory', 'status', 'exitCode', 'attempts')
+                           if key in step} for step in run['steps']],
+            })
+        self.changed()
+
     def visible(self, chunk):
         if not chunk:
             return
@@ -212,10 +223,16 @@ class Terminal:
                 self.closed = True
                 self.ready = False
                 if self.run and self.run['phase'] in ACTIVE:
+                    if self.run['index'] < len(self.run['steps']):
+                        step = self.run['steps'][self.run['index']]
+                        if step['status'] == 'running':
+                            step['status'] = 'needs-review'
                     self.run['phase'] = 'disconnected'
                     self.run['password'] = None
                     self.run['message'] = 'SSH 已断开，当前步骤结果需在服务器核对。'
-                self.changed()
+                    self.run_changed()
+                else:
+                    self.changed()
             if self.login_ticket:
                 self.login_ticket.close()
             try:
@@ -325,8 +342,9 @@ class Terminal:
             self.run['phase'] = 'running'
             self.run['message'] = f"正在执行 {current['name']}"
             current['status'] = 'running'
+            current['attempts'] = current.get('attempts', 0) + 1
             self.write(b'\r')
-            self.changed()
+            self.run_changed()
         elif event == 'X' and len(values) == 1 and current_run and current_run['phase'] == 'dispatch':
             self.run['steps'][self.run['index']]['status'] = 'failed'
             self.run['ticket'] = None
@@ -344,7 +362,7 @@ class Terminal:
             else:
                 self.run['index'] += 1
                 self.run['phase'] = 'between'
-                self.changed()
+                self.run_changed()
 
     def prepare_ssh(self, route, run, destination, port, account, login, host):
         port = int(port)
@@ -370,14 +388,16 @@ class Terminal:
                     and (endpoint['host'], endpoint['port'], user) ==
                         (interaction['destination'], interaction['port'], interaction['login']))
 
-    def begin(self, name, steps, password=None):
+    def begin(self, name, steps, password=None, kind='command'):
         with self.condition:
             self.run = {'name': name, 'user': steps[0]['user'], 'steps': steps, 'index': 0,
                         'phase': 'connecting', 'message': '正在连接服务器', 'password': password,
                         'id': secrets.token_urlsafe(12), 'finishedAt': None,
+                        'kind': kind, 'startedAt': int(time.time() * 1000),
+                        'target': {key: self.endpoint[key] for key in ('name', 'host', 'port', 'via') if key in self.endpoint},
                         'connection': self.endpoint['id'],
                         'takeover': False, 'ticket': None, 'switchTo': steps[0].get('switchTo') if len(steps) == 1 else None}
-            self.changed()
+            self.run_changed()
             self.advance()
 
     def request_switch(self, user, script):
@@ -388,7 +408,7 @@ class Terminal:
         run['switchingTo'] = user
         run['switchAcknowledged'] = False
         run['message'] = f'正在切换到 {user}'
-        self.changed()
+        self.run_changed()
         self.write((script + '\r').encode())
 
     def finish_switch(self, user):
@@ -421,6 +441,7 @@ class Terminal:
         if run['switchTo']:
             step = run['steps'][run['index']]
             step['status'] = 'running'
+            step['attempts'] = step.get('attempts', 0) + 1
             self.request_switch(run['switchTo'], step['script'].strip())
             return
         run['password'] = None
@@ -429,17 +450,17 @@ class Terminal:
         run['ticket'] = secrets.token_hex(12)
         run['payloadSent'] = False
         run['message'] = f"准备执行 {run['steps'][run['index']]['name']}"
-        self.changed()
+        self.run_changed()
         self.write(DISPATCH)
 
     def succeed(self, message):
         self.run.update(phase='succeeded', password=None, finishedAt=time.monotonic(), message=message)
-        self.changed()
+        self.run_changed()
 
     def pause(self, message):
         self.run['phase'] = 'paused'
         self.run['message'] = message
-        self.changed()
+        self.run_changed()
 
     def input(self, text):
         with self.condition:
@@ -470,17 +491,21 @@ class Terminal:
                     self.pause('已接管终端，处理完后可以继续。')
                 else:
                     run['message'] = '已接管。当前命令仍在终端内。'
-                    self.changed()
+                    self.run_changed()
             elif action == 'end':
                 if run['connection'] == self.endpoint['id'] and (run['phase'] in ('running', 'dispatch') or not self.ready):
                     self.write(b'\x03')
                 run['phase'] = 'ended'
+                if run['index'] < len(run['steps']):
+                    step = run['steps'][run['index']]
+                    if step['status'] == 'running':
+                        step['status'] = 'interrupted'
                 self.interaction = None
                 self.waiting_for_input = ''
                 run['ticket'] = None
                 run['password'] = None
                 run['message'] = '已结束流程'
-                self.changed()
+                self.run_changed()
             elif action in ('retry', 'next'):
                 if run['phase'] != 'paused' or not self.ready or not self.context:
                     raise ValueError('请等当前命令返回到终端提示符')

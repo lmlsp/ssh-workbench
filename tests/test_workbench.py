@@ -119,6 +119,16 @@ class StoreTests(unittest.TestCase):
         prior_client = {key: value for key, value in flow.items() if key != 'stepGroups'}
         self.assertEqual(self.store.save('flows', dict(prior_client, name='Renamed'))['stepGroups'], flow['stepGroups'])
 
+    def test_flow_revision_rejects_a_change_to_a_previewed_command(self):
+        node = self.connection('App', 'one.example')
+        task = self.command(node, 'Inspect', 'pwd')
+        flow = self.store.save('flows', {'name': 'Check', 'connection': node['id'], 'steps': [task['id']] * 2})
+        revision = self.store.current()['flows'][0]['revision']
+        self.store.plan('flow', flow['id'], {}, revision=revision)
+        self.store.save('commands', dict(task, script='id'))
+        with self.assertRaisesRegex(ValueError, '已有修改'):
+            self.store.plan('flow', flow['id'], {}, revision=revision)
+
     def test_ssh_uses_legacy_saved_value_and_manual_login_requires_unique_password(self):
         node = self.connection('Jump', 'jump.example')
         command = self.command(node, 'Connect', 'ssh -p 2222 operator@dest.example', password='fixture-one')
@@ -268,9 +278,25 @@ class SelectedTerminalTests(unittest.TestCase):
     def test_run_keeps_selected_terminal(self):
         result=workbench.execute_on_terminal({'kind':'flow','id':'example','terminal':'selected'})
         self.assertEqual(result,{'id':'selected'})
-        self.terminal.begin.assert_called_once_with('Inspect',self.steps,None)
+        self.terminal.begin.assert_called_once_with('Inspect',self.steps,None,'flow')
         self.new_terminal.assert_not_called()
         self.assertEqual(list(self.terms),['selected'])
+
+    def test_paused_run_can_only_be_replaced_with_its_id_after_prompt_returns(self):
+        self.terminal.control = Mock()
+        self.terminal.run = {'id': 'paused-run', 'name': 'Previous', 'phase': 'paused',
+                             'steps': [{'name': 'Waiting'}], 'index': 0, 'connection': self.connection['id']}
+        request = {'kind': 'flow', 'id': 'example', 'terminal': 'selected'}
+        with self.assertRaisesRegex(ValueError, 'Previous'):
+            workbench.execute_on_terminal(dict(request, replaceRun='different-run'))
+        self.terminal.ready = False
+        with self.assertRaisesRegex(ValueError, 'Previous'):
+            workbench.execute_on_terminal(dict(request, replaceRun='paused-run'))
+        self.terminal.control.assert_not_called()
+        self.terminal.ready = True
+        workbench.execute_on_terminal(dict(request, replaceRun='paused-run'))
+        self.terminal.control.assert_called_once_with('end')
+        self.terminal.begin.assert_called_once_with('Inspect', self.steps, None, 'flow')
 
     def test_busy_terminal_or_changed_connection_rejected(self):
         request={'kind':'command','id':'example','terminal':'selected'}

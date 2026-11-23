@@ -110,6 +110,18 @@
 #run-group-options { display:flex; flex-wrap:wrap; gap:8px 16px; }
 #run-group-options label { display:flex; align-items:center; gap:6px; margin:0; }
 #run-group-options input { width:auto; min-height:0; }
+.run-preview { padding:8px 10px; border:1px solid var(--line); border-radius:7px; background:var(--surface); }
+.run-preview ol,.run-log-steps { margin:6px 0 0; padding-left:24px; }
+.run-preview li,.run-log-steps li { margin:4px 0; overflow-wrap:anywhere; }
+.run-preview small,.run-log-steps small { color:#526682; }
+.run-availability { margin:0; padding:8px 10px; background:#f4f0e5; color:#514221; border-radius:7px; }
+.run-log-list { display:grid; gap:8px; padding:0; list-style:none; }
+.run-log-list details { padding:11px 13px; border:1px solid var(--line); border-radius:9px; background:var(--paper); overflow-wrap:anywhere; }
+.run-log-list summary { cursor:pointer; }
+.run-log-list summary time { margin-left:12px; color:#526682; font-size:.83rem; }
+.run-log-list details p { margin:8px 0; }
+.run-log-list [data-status="succeeded"] { color:var(--success); }
+.run-log-list [data-status="failed"],.run-log-list [data-status="disconnected"] { color:var(--error); }
 .step-order { color:var(--muted); font:650 .8rem ui-monospace,monospace; }
 #step-list button { margin:0; }
 #step-list .step-grip { position:relative; width:28px; height:28px; padding:0; flex:none; border-color:transparent; background:transparent; cursor:grab; touch-action:none; }

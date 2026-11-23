@@ -172,6 +172,7 @@ function show(view) {
   $$('.view').forEach(node=>{node.hidden=node.id!=='view-'+view;});
   $$('.navigation button').forEach(node=>node.dataset.view===view?node.setAttribute('aria-current','page'):node.removeAttribute('aria-current'));
   workspace.visible=view==='terminal'; workspace.layout();
+  if(view==='run-log')void loadRunLog();
 }
 
 function setSidebarOpen(open,focus=false) {
@@ -205,18 +206,23 @@ function askRun(collection,item) {
     const connection=byId('connections',item.connection);
     return actionNotice(`请选择「${connection?.name || '对应 SSH 连接'}」的终端执行。`);
   }
-  const steps=collection==='flows'?item.steps.map(id=>byId('commands',id)):[item];
+  const isFlow=collection==='flows';
+  const steps=(isFlow?item.steps.map(id=>byId('commands',id)):[item]).map((step,index)=>({
+    ...step,group:item.stepGroups?.[index]||'',
+  }));
   const groups=new Map([['',new Map()]]);
-  steps.forEach((step,index)=>{
-    const group=item.stepGroups?.[index]||'';
+  steps.forEach(step=>{
+    const group=step.group;
     if(!groups.has(group))groups.set(group,new Map());
     for(const [key,label] of Object.entries(step?.params||{}))groups.get(group).set(key,label);
   });
-  const data={kind:collection==='flows'?'flow':'command',id:item.id,terminal:panel.meta.id};
-  if(groups.size===1 && !groups.get('').size){void execute({...data,params:{}}).catch(error=>actionNotice(error.message));return;}
-  state.parameters=data;
+  const data={kind:isFlow?'flow':'command',id:item.id,terminal:panel.meta.id,revision:item.revision};
+  if(!isFlow && !groups.get('').size){void execute({...data,params:{}}).catch(error=>actionNotice(error.message));return;}
+  state.parameters={data,steps,connection:item.connection,submitting:false};
   $('#parameters-title').textContent=item.name;
-  $('#parameters-terminal').textContent=`执行位置 · 终端 ${panel.ordinal} · ${panel.connectionName}`;
+  const location=panel.packet?.endpoint||byId('connections',panel.connectionId);
+  $('#parameters-terminal').textContent=[`终端 ${panel.ordinal}`,panel.connectionName,location?endpoint(location):'',`执行用户 ${steps[0]?.user||'—'}`].filter(Boolean).join(' · ');
+  $('#run-preview').hidden=!isFlow;
   const choices=[...groups.keys()].filter(Boolean);
   $('#run-groups').hidden=!choices.length;
   $('#run-group-options').replaceChildren(...choices.map(group=>{
@@ -233,6 +239,7 @@ function askRun(collection,item) {
     }
     return section;
   }));
+  if(state.view!=='terminal')show('terminal');
   updateParameterGroups();
   message('#parameters-error');$('#parameters').showModal();
 }
@@ -245,7 +252,80 @@ function updateParameterGroups() {
     section.hidden=Boolean(section.dataset.group)&&!selected.includes(section.dataset.group);
     section.disabled=section.hidden;
   }
-  $('#parameters-form button[type="submit"]').disabled=!$('#run-groups').hidden&&!selected.length;
+  if(!$('#run-preview').hidden){
+    const steps=state.parameters.steps.filter(step=>!step.group||selected.includes(step.group));
+    $('#run-preview-caption').textContent=!$('#run-groups').hidden&&!selected.length
+      ? '选择分组后查看本次步骤' : `本次执行 ${steps.length} 步`;
+    $('#run-preview-steps').replaceChildren(...steps.map(step=>{
+      const item=document.createElement('li'),detail=document.createElement('small');
+      detail.textContent=[step.group,step.directory].filter(Boolean).join(' · ');
+      item.append(step.name||'未知指令',detail.textContent?' · ':'',detail);
+      return item;
+    }));
+    $('#run-preview-steps').hidden=!$('#run-groups').hidden&&!selected.length;
+  }
+  updateRunAvailability();
+}
+
+function updateRunAvailability() {
+  const preview=state.parameters;
+  if(!preview)return;
+  const panel=workspace.panels.get(preview.data.terminal), packet=panel?.packet, run=packet?.run;
+  const running=activePhases.includes(run?.phase);
+  preview.replaceRun=null;
+  let blocked='', hint='';
+  if(!panel || panel.meta.closed || panel.connectionId!==preview.connection)blocked='执行位置已变动，请重新选中终端。';
+  else if(running && run.phase==='paused' && packet.ready && run.connection===preview.connection){
+    preview.replaceRun=run.id;
+    hint=`上一轮「${run.name}」已暂停。可以结束上一轮并执行本次流程。`;
+  }else if(running){
+    const step=run.steps[run.index]?.name;
+    blocked=`「${run.name}」尚未结束${step?'，当前步骤「'+step+'」':''}。请等步骤返回或先结束流程。`;
+  }else if(!packet?.ready)blocked='等待终端返回到命令提示符。';
+  message('#parameters-blocked', blocked||hint);
+  const submit=$('#parameters-form button[type="submit"]');
+  submit.textContent=preview.replaceRun?'结束上一轮并执行':'开始执行';
+  submit.disabled=preview.submitting||Boolean(blocked)||!$('#run-groups').hidden&&!selectedGroups().length;
+}
+
+const runStatus = {
+  pending:'待执行',connecting:'准备执行',switching:'切换用户',dispatch:'准备执行',running:'执行中',between:'执行中',
+  succeeded:'通过',paused:'已暂停',failed:'失败',ended:'已结束',interrupted:'已中断',disconnected:'待核对',
+  manual:'手工完成','needs-review':'待核对',
+};
+
+async function loadRunLog(before=null) {
+  const refresh=$('#refresh-run-log'), more=$('#more-run-log');
+  if(refresh.disabled)return;
+  refresh.disabled=true;more.disabled=true;
+  try {
+    const data=await api(before?'run-log?before='+before:'run-log');
+    const list=$('#run-log-list');
+    if(!before)list.replaceChildren();
+    for(const run of data.runs){
+      const item=document.createElement('li'), details=document.createElement('details'), summary=document.createElement('summary');
+      const title=document.createElement('strong'), outcome=document.createElement('span'), date=document.createElement('time');
+      title.textContent=run.name;outcome.dataset.status=run.phase;outcome.textContent=runStatus[run.phase];
+      date.dateTime=new Date(run.startedAt).toISOString();date.textContent=new Date(run.startedAt).toLocaleString();
+      summary.append(title,' · ',outcome,date);
+      const target=document.createElement('p'), groups=[...new Set(run.steps.map(step=>step.group).filter(Boolean))];
+      target.textContent=[run.kind==='flow'?'流程':'快捷指令',run.target.name,run.target.port?endpoint(run.target):run.target.host,
+        run.user,groups.join('、')].filter(Boolean).join(' · ');
+      const steps=document.createElement('ol');steps.className='run-log-steps';
+      for(const step of run.steps){
+        const row=document.createElement('li'), status=document.createElement('span'), extra=document.createElement('small');
+        status.dataset.status=step.status;status.textContent=runStatus[step.status];
+        extra.textContent=[step.group,step.directory,step.exitCode!=null?`返回码 ${step.exitCode}`:'',
+          step.attempts>1?`执行 ${step.attempts} 次`:''].filter(Boolean).join(' · ');
+        row.append(step.name,' · ',status,' ',extra);steps.append(row);
+      }
+      const last=document.createElement('p');last.textContent=run.message;
+      details.append(summary,target,last,steps);item.append(details);list.append(item);
+    }
+    $('#run-log-empty').hidden=Boolean(list.children.length);
+    more.hidden=!data.before;more.onclick=()=>loadRunLog(data.before);
+  } catch(error){if(state.view==='run-log')actionNotice(error.message);}
+  finally{refresh.disabled=false;more.disabled=false;}
 }
 
 async function askDelete(collection,id) {
@@ -504,14 +584,19 @@ $('#editor-form').onsubmit=async event=>{
   catch(error){message('#editor-error',error.message);}finally{save.disabled=false;}
 };
 $('#cancel-run').onclick=()=>$('#parameters').close();
+$('#refresh-run-log').onclick=()=>loadRunLog();
 $('#parameters-form').onsubmit=async event=>{
-  event.preventDefault();const submit=$('button[type="submit"]',event.currentTarget);submit.disabled=true;
+  event.preventDefault();
+  const preview=state.parameters;
+  if(!preview||$('button[type="submit"]',event.currentTarget).disabled)return;
+  preview.submitting=true;
+  updateRunAvailability();
   const fields=Object.fromEntries($$('#parameters-inputs fieldset:not([disabled])').map(section=>[
     section.dataset.group,Object.fromEntries($$('input',section).map(input=>[input.name,input.value])),
   ]));
   const { '': params={}, ...groupParams }=fields;
-  try{await execute({...state.parameters,params,groups:selectedGroups(),groupParams});$('#parameters').close();}
-  catch(error){message('#parameters-error',error.message);}finally{updateParameterGroups();}
+  try{await execute({...preview.data,params,groups:selectedGroups(),groupParams,replaceRun:preview.replaceRun});$('#parameters').close();}
+  catch(error){message('#parameters-error',error.message);}finally{preview.submitting=false;updateRunAvailability();}
 };
 $('#cancel-delete').onclick=()=>$('#delete-dialog').close();
 $('#delete-form').onsubmit=async event=>{
@@ -524,7 +609,7 @@ function showLogin(){workspace.visible=false;workspace.layout();$('#workbench-na
 async function enter(){
   await load();$('#workspace').hidden=false;$('#workbench-navigation').hidden=false;$('#login').hidden=true;
   const view=sessionStorage.getItem('workbenchView');
-  show(['terminal','library','servers'].includes(view)?view:state.model.connections.length?'terminal':'servers');
+  show(['terminal','library','servers','run-log'].includes(view)?view:state.model.connections.length?'terminal':'servers');
   await workspace.refresh();
 }
 $('#login-form').onsubmit=async event=>{

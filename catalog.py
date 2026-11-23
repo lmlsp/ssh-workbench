@@ -149,6 +149,10 @@ def flow_groups(data, steps):
     return [clean({'name': group}, 'name', 32, False) for group in groups]
 
 
+def flow_revision(flow, steps):
+    return sha256(json.dumps([flow, steps], sort_keys=True).encode()).hexdigest()
+
+
 def render(script, values):
     """Replace complete, unquoted shell words with a single quoted argument."""
     placeholders = {match.start(): match for match in PARAM.finditer(script)}
@@ -248,6 +252,9 @@ class Store:
             state = self.read()
             state['servers'] = groups(state['connections'])
             state['connections'] = [public_connection(item) for item in state['connections']]
+            commands = {command['id']: command for command in state['commands']}
+            state['flows'] = [dict(flow, revision=flow_revision(flow, [commands.get(step) for step in flow['steps']]))
+                              for flow in state['flows']]
             state['commands'] = [public(item) for item in state['commands']]
             return state
 
@@ -431,11 +438,13 @@ class Store:
             raise ValueError('流程中的快捷指令须使用同一服务器连接和执行用户')
         return commands
 
-    def plan(self, kind, identifier, values, selected=None, group_values=None):
+    def plan(self, kind, identifier, values, selected=None, group_values=None, revision=None):
         with self.lock:
             state = self.read()
             chosen = match(state, 'flows' if kind == 'flow' else 'commands', identifier)
             steps = self.flow_steps(state, chosen['steps'], chosen['connection']) if kind == 'flow' else [chosen]
+            if kind == 'flow' and revision is not None and flow_revision(chosen, steps) != revision:
+                raise ValueError('流程或快捷指令已有修改。请刷新页面后再运行。')
             connection = match(state, 'connections', chosen['connection'])
             if not isinstance(values, dict):
                 raise ValueError('请输入执行参数')
@@ -458,7 +467,7 @@ class Store:
                 bound = {name: clean(params, name, 4000) for name in step['params']}
                 script = command_text(render(step['script'], bound))
                 planned = {'name': step['name'], 'user': step['user'], 'directory': step['directory'],
-                           'script': script, 'status': 'pending'}
+                           'script': script, 'status': 'pending', 'group': group}
                 target = switch_target(step['script'])
                 if target:
                     planned['switchTo'] = target
