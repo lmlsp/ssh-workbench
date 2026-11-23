@@ -238,14 +238,12 @@ class TerminalWorkspace {
     this.visible = false;
     this.sizes = new Map();
     this.ordinals = new Map();
-    this.nextOrdinal = 1;
     try {
       const saved = JSON.parse(sessionStorage.getItem('terminalLayout'));
       this.selected = saved?.selected || saved?.slots?.[saved.focused] || null;
       this.tiled = saved?.mode !== 'single';
       if(saved?.sizes) this.sizes=new Map(Object.entries(saved.sizes));
       if(saved?.ordinals) this.ordinals=new Map(Object.entries(saved.ordinals).filter(([,number])=>Number.isSafeInteger(number)&&number>0));
-      this.nextOrdinal=Math.max(0,...this.ordinals.values())+1;
       this.dismissed = new Set(Array.isArray(saved?.dismissed) ? saved.dismissed : []);
     } catch (_) { this.dismissed = new Set(); }
   }
@@ -254,18 +252,25 @@ class TerminalWorkspace {
     const entries = await api('terminals');
     const ids = new Set(entries.map(entry=>entry.id));
     for (const [id,panel] of this.panels) if (!ids.has(id)) { panel.dispose(); this.panels.delete(id); }
+    this.dismissed=new Set([...this.dismissed].filter(id=>ids.has(id)));
+    for(const id of this.sizes.keys())if(!ids.has(id)||this.dismissed.has(id))this.sizes.delete(id);
+    for(const id of this.ordinals.keys())if(!ids.has(id)||this.dismissed.has(id))this.ordinals.delete(id);
+    const occupied=new Set(this.ordinals.values());
+    let available=1;
     for (const entry of entries) {
       if (this.dismissed.has(entry.id)) continue;
       if (this.panels.has(entry.id)) this.panels.get(entry.id).meta=entry;
       else {
-        const ordinal=this.ordinals.get(entry.id) || this.nextOrdinal++;
+        let ordinal=this.ordinals.get(entry.id);
+        if(!ordinal){
+          while(occupied.has(available))available++;
+          ordinal=available;
+          occupied.add(ordinal);
+        }
         this.ordinals.set(entry.id,ordinal);
         this.panels.set(entry.id,new TerminalPanel(entry,this,ordinal));
       }
     }
-    this.dismissed=new Set([...this.dismissed].filter(id=>ids.has(id)));
-    for(const id of this.sizes.keys())if(!ids.has(id)||this.dismissed.has(id))this.sizes.delete(id);
-    for(const id of this.ordinals.keys())if(!ids.has(id)||this.dismissed.has(id))this.ordinals.delete(id);
     if (!this.panels.has(this.selected)) this.selected=this.panels.keys().next().value || null;
     this.layout();
   }
