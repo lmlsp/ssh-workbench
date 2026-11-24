@@ -149,6 +149,16 @@ def flow_groups(data, steps):
     return [clean({'name': group}, 'name', 32, False) for group in groups]
 
 
+def step_waits(values, steps):
+    if values is None:
+        return [0] * len(steps)
+    if not isinstance(values, list) or len(values) != len(steps):
+        raise ValueError('每个步骤须对应一个等待时间')
+    if any(type(wait) is not int or not 0 <= wait <= threading.TIMEOUT_MAX for wait in values):
+        raise ValueError('等待时间须填写非负整数秒')
+    return values
+
+
 def flow_revision(flow, steps):
     return sha256(json.dumps([flow, steps], sort_keys=True).encode()).hexdigest()
 
@@ -412,6 +422,11 @@ class Store:
                     groups = flow_groups(data if 'stepGroups' in data else previous, steps)
                     if any(groups):
                         item['stepGroups'] = groups
+                    if 'stepWaits' not in data and previous.get('stepWaits') and steps != previous['steps']:
+                        raise ValueError('请刷新页面后修改带等待时间的流程')
+                    waits = step_waits(data.get('stepWaits', previous.get('stepWaits')), steps)
+                    if any(waits):
+                        item['stepWaits'] = waits
             state[collection] = [item if row['id'] == identifier else row for row in state[collection]]
             if not previous:
                 state[collection].append(item)
@@ -438,7 +453,7 @@ class Store:
             raise ValueError('流程中的快捷指令须使用同一服务器连接和执行用户')
         return commands
 
-    def plan(self, kind, identifier, values, selected=None, group_values=None, revision=None):
+    def plan(self, kind, identifier, values, selected=None, group_values=None, revision=None, waits=None):
         with self.lock:
             state = self.read()
             chosen = match(state, 'flows' if kind == 'flow' else 'commands', identifier)
@@ -449,6 +464,7 @@ class Store:
             if not isinstance(values, dict):
                 raise ValueError('请输入执行参数')
             groups = flow_groups(chosen, steps) if kind == 'flow' else ['']
+            waits = step_waits(chosen.get('stepWaits') if waits is None else waits, steps) if kind == 'flow' else [0]
             available = set(groups) - {''}
             if available:
                 if not isinstance(selected, list) or not selected or any(not isinstance(group, str) or group not in available for group in selected):
@@ -457,17 +473,19 @@ class Store:
                     group_values = {}
                 if not isinstance(group_values, dict):
                     raise ValueError('请检查分组参数')
-            selected_steps = [(step, group) for step, group in zip(steps, groups) if not group or group in selected]
+            selected_steps = [(step, group, wait) for step, group, wait in zip(steps, groups, waits)
+                              if not group or group in selected]
             result = []
             password = None
-            for step, group in selected_steps:
+            for index, (step, group, wait) in enumerate(selected_steps):
                 params = group_values.get(group, {}) if group else values
                 if not isinstance(params, dict):
                     raise ValueError('请检查分组参数')
                 bound = {name: clean(params, name, 4000) for name in step['params']}
                 script = command_text(render(step['script'], bound))
                 planned = {'name': step['name'], 'user': step['user'], 'directory': step['directory'],
-                           'script': script, 'status': 'pending', 'group': group}
+                           'script': script, 'status': 'pending', 'group': group,
+                           'waitSeconds': wait if index+1 < len(selected_steps) else 0}
                 target = switch_target(step['script'])
                 if target:
                     planned['switchTo'] = target

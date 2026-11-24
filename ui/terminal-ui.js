@@ -20,7 +20,10 @@ class TerminalPanel {
     close.onclick = () => this.workspace.close(this.meta.id);
     close.setAttribute('aria-label', `关闭终端 ${ordinal} · ${meta.connectionName}`);
     this.host.addEventListener('focusin', () => this.workspace.focus(this.meta.id));
-    $$('[data-action]', this.node).forEach(node => { node.onclick = () => this.control(node.dataset.action); });
+    $$('[data-action]',this.node).forEach(node=>{
+      node.onclick=()=>this.control(node.dataset.action==='pause' && (this.packet?.run?.takeover || this.packet?.run?.beforeStep)
+        ? 'resume' : node.dataset.action);
+    });
     this.applySize();
     this.bindResizeHandle();
   }
@@ -129,6 +132,7 @@ class TerminalPanel {
     clearTimeout(this.inputTimer);
     clearTimeout(this.sizeTimer);
     clearTimeout(this.completionTimer);
+    clearInterval(this.clockTimer);
     this.observer?.disconnect();
     this.terminal?.dispose();
     this.node.remove();
@@ -154,8 +158,13 @@ class TerminalPanel {
   }
 
   control(action) {
-    const promise = api(`${this.path}/control`,{action});
-    if (action === 'takeover') this.takeover = promise;
+    if(action==='resume' && this.inputTimer){
+      clearTimeout(this.inputTimer);
+      this.flushInput();
+    }
+    const send=()=>api(`${this.path}/control`,{action});
+    const promise=action==='resume'?this.inputChain.then(send):send();
+    if (action === 'pause') this.takeover = promise;
     void promise.then(() => { this.error(''); this.terminal.focus(); }).catch(error => this.error(error.message))
       .finally(() => { if (this.takeover === promise) this.takeover = null; });
   }
@@ -172,6 +181,20 @@ class TerminalPanel {
     this.revision = packet.revision;
     if(this.reconnecting){this.reconnecting=false;this.error('');}
     this.render(packet);
+  }
+
+  renderClock(run) {
+    clearInterval(this.clockTimer);
+    const clock=$('.run-clock',this.node), waiting=run?.phase==='waiting';
+    clock.hidden=!waiting && !(run?.phase==='paused' && run.beforeStep && run.waitMs>0);
+    if(clock.hidden)return;
+    const next=run.steps[run.index]?.name, deadline=performance.now()+run.waitMs;
+    const tick=()=>{
+      const remaining=Math.max(0,Math.ceil((waiting?deadline-performance.now():run.waitMs)/1000));
+      clock.textContent=waiting?`${remaining} 秒后执行「${next}」`:`倒计时暂停 · 剩余 ${remaining} 秒`;
+    };
+    tick();
+    if(waiting)this.clockTimer=setInterval(tick,200);
   }
 
   render(packet) {
@@ -204,20 +227,25 @@ class TerminalPanel {
       },remaining);
     }
     summary.classList.toggle('run-complete',complete);
-    summary.hidden=!run || complete && this.completionExpired;
+    summary.hidden=!run || run.phase==='exited' || complete && this.completionExpired;
+    this.renderClock(run);
     if (run) {
       $('.run-message',this.node).textContent = run.message;
       $('.run-steps',this.node).replaceChildren(...run.steps.map(step => {
         const item=document.createElement('li'); item.dataset.status=step.status;
         item.textContent=`${step.name} · ${runStatus[step.status]}`; return item;
       }));
-      $('[data-action="takeover"]',this.node).hidden = !activePhases.includes(run.phase) || run.takeover || ['paused','stopping'].includes(run.phase);
+      const toggle=$('[data-action="pause"]',this.node), recover=run.phase==='paused'&&!run.beforeStep;
+      const resuming=run.takeover||run.beforeStep;
+      toggle.hidden=!activePhases.includes(run.phase)||run.phase==='stopping'||recover;
+      toggle.textContent=resuming?'继续':'暂停';
+      toggle.disabled=run.phase==='paused'&&(!packet.ready||context?.user!==run.user||run.connection!==this.connectionId);
       for (const action of ['retry','next']) {
         const node = $(`[data-action="${action}"]`,this.node);
         const expected = action==='next' && run.switchTo ? run.switchTo : run.user;
-        node.hidden = run.phase !== 'paused'; node.disabled = !packet.ready || context?.user !== expected || run.connection!==this.connectionId;
+        node.hidden = !recover; node.disabled = !packet.ready || context?.user !== expected || run.connection!==this.connectionId;
       }
-      $('[data-action="end"]',this.node).hidden = !activePhases.includes(run.phase) || run.phase==='stopping';
+      $('[data-action="leave"]',this.node).hidden = !activePhases.includes(run.phase) || run.phase==='stopping';
     }
     if (packet.closed || oldPhase !== run?.phase || changedConnection) this.workspace.drawTabs();
     if ($('#parameters').open && state.parameters?.data.terminal===packet.id) updateRunAvailability();
@@ -250,13 +278,14 @@ class TerminalWorkspace {
     } catch (_) { this.dismissed = new Set(); }
   }
 
-  async refresh() {
+  async refresh(discardClosed=false) {
     const sequence = ++this.refreshSequence;
     const entries = await api('terminals');
     if(sequence < this.lastAppliedRefresh)return false;
     this.lastAppliedRefresh = sequence;
     const ids = new Set(entries.map(entry=>entry.id));
-    for (const [id,panel] of this.panels) if (!ids.has(id)) { panel.dispose(); this.panels.delete(id); }
+    if(discardClosed)for(const entry of entries)if(entry.closed)this.dismissed.add(entry.id);
+    for (const [id,panel] of this.panels) if (!ids.has(id)||this.dismissed.has(id)) { panel.dispose(); this.panels.delete(id); }
     this.dismissed=new Set([...this.dismissed].filter(id=>ids.has(id)));
     for(const id of this.sizes.keys())if(!ids.has(id)||this.dismissed.has(id))this.sizes.delete(id);
     for(const id of this.ordinals.keys())if(!ids.has(id)||this.dismissed.has(id))this.ordinals.delete(id);

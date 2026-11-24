@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 import auth
 import catalog
 from run_log import RunLog
-from terminal import CANCEL_DISPATCH, Terminal, pack, routed_endpoint
+from terminal import CANCEL_DISPATCH, DISPATCH, Terminal, pack, routed_endpoint
 import workbench
 
 
@@ -130,6 +130,21 @@ class StoreTests(unittest.TestCase):
         self.store.save('commands', dict(task, script='id'))
         with self.assertRaisesRegex(ValueError, '已有修改'):
             self.store.plan('flow', flow['id'], {}, revision=revision)
+
+    def test_step_waits_follow_the_selected_steps_and_preview_does_not_save(self):
+        node = self.connection('App', 'one.example')
+        first = self.command(node, 'Prepare', 'true')
+        skipped = self.command(node, 'Wrong group', 'true')
+        last = self.command(node, 'Last step', 'true')
+        flow = self.store.save('flows', {'name': 'Wait', 'connection': node['id'],
+                              'steps': [first['id'], skipped['id'], last['id']],
+                              'stepGroups': ['', 'Admin', 'Portal'], 'stepWaits': [5, 11, 13]})
+        _, _, steps, _ = self.store.plan('flow', flow['id'], {}, ['Portal'], waits=[7, 12, 15])
+        self.assertEqual([(step['name'], step['waitSeconds']) for step in steps], [('Prepare',7), ('Last step',0)])
+        self.assertEqual(self.store.current()['flows'][0]['stepWaits'], [5,11,13])
+        for malformed in ([1, -1, 1], [1, True, 1], [1, 2.4, 1], [1, 2]):
+            with self.subTest(malformed=malformed), self.assertRaisesRegex(ValueError, '等待时间'):
+                self.store.plan('flow', flow['id'], {}, ['Portal'], waits=malformed)
 
     def test_ssh_uses_legacy_saved_value_and_manual_login_requires_unique_password(self):
         node = self.connection('Jump', 'jump.example')
@@ -297,7 +312,7 @@ class SelectedTerminalTests(unittest.TestCase):
         self.terminal.control.assert_not_called()
         self.terminal.ready = True
         workbench.execute_on_terminal(dict(request, replaceRun='paused-run'))
-        self.terminal.control.assert_called_once_with('end')
+        self.terminal.control.assert_called_once_with('leave')
         self.terminal.begin.assert_called_once_with('Inspect', self.steps, None, 'flow')
 
     def test_busy_terminal_or_changed_connection_rejected(self):
@@ -350,6 +365,8 @@ class TerminalDispatchTests(unittest.TestCase):
         self.term.connection = self.term.endpoint = {'id': 'example'}
         self.term.ready = False
         self.term.login_ticket = self.term.interaction = self.term.on_run = None
+        self.term.wait_timer = None
+        self.term.waiting_for_input = ''
         self.term.run = {'phase': 'dispatch', 'connection': 'example', 'ticket': 'step-ticket',
                          'payloadSent': False, 'index': 0, 'steps': [{'status': 'pending'}]}
         self.term.write = Mock()
@@ -382,6 +399,49 @@ class TerminalDispatchTests(unittest.TestCase):
         self.term.marker(['', 'P', 'operator', '/srv/example'])
         self.assertEqual(self.term.run['phase'], 'paused')
         self.assertTrue(self.term.ready)
+
+    def test_exiting_a_live_command_does_not_write_any_terminal_input(self):
+        self.term.run['phase'] = 'running'
+        self.term.run['steps'][0]['status'] = 'running'
+        self.term.interaction = {'kind': 'custom', 'response': 'fixture'}
+        self.term.control('leave')
+        self.term.write.assert_not_called()
+        self.assertEqual(self.term.run['phase'], 'exited')
+        self.assertEqual(self.term.run['steps'][0]['status'], 'detached')
+        self.assertNotIn('response', self.term.interaction)
+
+    def test_pause_suspends_a_countdown_and_old_timer_cannot_launch_a_step(self):
+        self.term.closed = False
+        self.term.ready = True
+        self.term.context = {'user': 'operator'}
+        self.term.wait_timer = timer = Mock()
+        run = self.term.run
+        run.update(phase='waiting', name='Workflow', user='operator', switchTo=None,
+                   takeover=False, waitDeadline=109, waitRemaining=5,
+                   steps=[{'name':'Next', 'status':'pending'}])
+        with patch('terminal.time.monotonic', return_value=104):
+            self.term.control('pause')
+        timer.cancel.assert_called_once_with()
+        self.assertEqual(run['waitRemaining'], 5)
+        with patch('terminal.time.monotonic', return_value=120), patch('terminal.threading.Timer', return_value=Mock()):
+            self.term.control('resume')
+        self.assertEqual(run['waitDeadline'], 125)
+        self.term.wait_finished(run, 109)
+        self.term.write.assert_not_called()
+        self.term.wait_finished(run, 125)
+        self.term.write.assert_called_once_with(DISPATCH)
+
+    def test_ctrl_c_keeps_the_step_at_recovery_even_if_the_command_returns_zero(self):
+        self.term.run.update(phase='running', takeover=False)
+        self.term.run['steps'][0]['status'] = 'running'
+        self.term.input('\x03')
+        self.term.marker(['', 'R', 'step-ticket', '0'])
+        self.term.marker(['', 'P', 'operator', '/srv/example'])
+        self.assertEqual(self.term.run['phase'], 'paused')
+        self.assertEqual(self.term.run['index'], 0)
+        self.assertEqual(self.term.run['steps'][0]['status'], 'interrupted')
+        with self.assertRaisesRegex(ValueError, '重试'):
+            self.term.control('resume')
 
 
 class ShellHistoryTests(unittest.TestCase):

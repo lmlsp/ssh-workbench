@@ -105,7 +105,8 @@ def execute_on_terminal(data):
         if kind not in ('command', 'flow'):
             raise ValueError('请选择快捷指令或流程')
         name, connection, steps, password = STORE.plan(kind, data.get('id'), data.get('params') or {},
-                                                       data.get('groups'), data.get('groupParams'), data.get('revision'))
+                                                       data.get('groups'), data.get('groupParams'), data.get('revision'),
+                                                       data.get('stepWaits'))
         with term.condition:
             if term.closed:
                 raise ValueError('选中的 SSH 终端已断开')
@@ -118,13 +119,13 @@ def execute_on_terminal(data):
                          and not (t is term and replacement)), None)
             if busy:
                 step = busy['steps'][min(busy['index'], len(busy['steps']) - 1)]['name']
-                raise ValueError(f"「{busy['name']}」正在处理「{step}」。请等步骤返回或先结束流程。")
+                raise ValueError(f"「{busy['name']}」正在处理「{step}」。请等步骤返回或先退出自动化。")
             if term.context is None:
                 raise ValueError('请先完成选中终端的 SSH 登录')
             if not term.ready:
                 raise ValueError('选中的终端正在执行命令或等待输入，请等命令提示符出现后再执行')
             if replacement:
-                term.control('end')
+                term.control('leave')
             term.begin(name, steps, password, kind)
             return {'id': term.id}
 
@@ -322,11 +323,11 @@ class Handler(BaseHTTPRequestHandler):
                 elif operation == 'close':
                     with term.condition:
                         if not term.closed and term.run and term.run['phase'] in ACTIVE:
-                            raise ValueError('请先结束流程，再断开 SSH 终端')
+                            raise ValueError('请先退出自动化，再断开 SSH 终端')
                         term.close()
                 else:
                     action = data.get('action')
-                    if action not in ('takeover', 'retry', 'next', 'end'):
+                    if action not in ('takeover', 'pause', 'resume', 'retry', 'next', 'end', 'leave'):
                         raise ValueError('无效的执行操作')
                     term.control(action)
                 self.respond(200, {'ok': True})

@@ -3,7 +3,7 @@
 const $ = (selector, root=document) => root.querySelector(selector);
 const $$ = (selector, root=document) => Array.from(root.querySelectorAll(selector));
 const state = {view:'terminal', model:{servers:[],connections:[],commands:[],flows:[]}, editor:null, side:'flows'};
-const activePhases = ['connecting','switching','dispatch','running','between','paused','stopping'];
+const activePhases = ['connecting','switching','dispatch','running','between','waiting','paused','stopping'];
 const workspace = new TerminalWorkspace();
 const passwordControls={
   commands:{input:'#edit-secret',toggle:'#toggle-secret',clear:'#clear-secret',endpoint:'password',hint:'例如 SSH 或 su 密码'},
@@ -208,7 +208,7 @@ function askRun(collection,item) {
   }
   const isFlow=collection==='flows';
   const steps=(isFlow?item.steps.map(id=>byId('commands',id)):[item]).map((step,index)=>({
-    ...step,group:item.stepGroups?.[index]||'',
+    ...step,group:item.stepGroups?.[index]||'',wait:item.stepWaits?.[index]??0,savedWait:item.stepWaits?.[index]??0,
   }));
   const groups=new Map([['',new Map()]]);
   steps.forEach(step=>{
@@ -223,6 +223,7 @@ function askRun(collection,item) {
   const location=panel.packet?.endpoint||byId('connections',panel.connectionId);
   $('#parameters-terminal').textContent=[`终端 ${panel.ordinal}`,panel.connectionName,location?endpoint(location):'',`执行用户 ${steps[0]?.user||'—'}`].filter(Boolean).join(' · ');
   $('#run-preview').hidden=!isFlow;
+  $('#run-wait-all').value='0';
   const choices=[...groups.keys()].filter(Boolean);
   $('#run-groups').hidden=!choices.length;
   $('#run-group-options').replaceChildren(...choices.map(group=>{
@@ -246,6 +247,20 @@ function askRun(collection,item) {
 
 function selectedGroups() { return $$('#run-group-options input:checked').map(input=>input.value); }
 
+function stepsForGroups(steps, selected) {
+  return steps.filter(step=>!step.group||selected.includes(step.group));
+}
+
+function waitInput(step, label) {
+  const wrap=document.createElement('label'), input=document.createElement('input');
+  wrap.className='step-wait';
+  input.type='number';input.min='0';input.step='1';input.value=step.wait;
+  input.setAttribute('aria-label',label);
+  input.oninput=()=>{step.wait=input.value===''?0:input.valueAsNumber;};
+  wrap.append(input,'秒');
+  return wrap;
+}
+
 function updateParameterGroups() {
   const selected=selectedGroups();
   for(const section of $$('#parameters-inputs fieldset')){
@@ -253,16 +268,19 @@ function updateParameterGroups() {
     section.disabled=section.hidden;
   }
   if(!$('#run-preview').hidden){
-    const steps=state.parameters.steps.filter(step=>!step.group||selected.includes(step.group));
-    $('#run-preview-caption').textContent=!$('#run-groups').hidden&&!selected.length
+    const steps=stepsForGroups(state.parameters.steps, selected);
+    const awaitingSelection=!$('#run-groups').hidden&&!selected.length;
+    $('#run-preview-caption').textContent=awaitingSelection
       ? '选择分组后查看本次步骤' : `本次执行 ${steps.length} 步`;
-    $('#run-preview-steps').replaceChildren(...steps.map(step=>{
+    $('#run-wait-bulk').hidden=awaitingSelection||steps.length<2;
+    $('#run-preview-steps').replaceChildren(...steps.map((step,index)=>{
       const item=document.createElement('li'),detail=document.createElement('small');
       detail.textContent=[step.group,step.directory].filter(Boolean).join(' · ');
       item.append(step.name||'未知指令',detail.textContent?' · ':'',detail);
+      if(index+1<steps.length)item.append(waitInput(step,`本次第 ${index+1} 步执行后等待（秒）`));
       return item;
     }));
-    $('#run-preview-steps').hidden=!$('#run-groups').hidden&&!selected.length;
+    $('#run-preview-steps').hidden=awaitingSelection;
   }
   updateRunAvailability();
 }
@@ -277,21 +295,21 @@ function updateRunAvailability() {
   if(!panel || panel.meta.closed || panel.connectionId!==preview.connection)blocked='执行位置已变动，请重新选中终端。';
   else if(running && run.phase==='paused' && packet.ready && run.connection===preview.connection){
     preview.replaceRun=run.id;
-    hint=`上一轮「${run.name}」已暂停。可以结束上一轮并执行本次流程。`;
+    hint=`上一轮「${run.name}」已暂停。可以退出上一轮并执行本次流程。`;
   }else if(running){
     const step=run.steps[run.index]?.name;
-    blocked=`「${run.name}」尚未结束${step?'，当前步骤「'+step+'」':''}。请等步骤返回或先结束流程。`;
+    blocked=`「${run.name}」尚未结束${step?'，当前步骤「'+step+'」':''}。请等步骤返回或先退出自动化。`;
   }else if(!packet?.ready)blocked='等待终端返回到命令提示符。';
   message('#parameters-blocked', blocked||hint);
   const submit=$('#parameters-form button[type="submit"]');
-  submit.textContent=preview.replaceRun?'结束上一轮并执行':'开始执行';
+  submit.textContent=preview.replaceRun?'退出上一轮并执行':'开始执行';
   submit.disabled=preview.submitting||Boolean(blocked)||!$('#run-groups').hidden&&!selectedGroups().length;
 }
 
 const runStatus = {
-  pending:'待执行',connecting:'准备执行',switching:'切换用户',dispatch:'准备执行',running:'执行中',between:'执行中',
-  succeeded:'通过',paused:'已暂停',failed:'失败',ended:'已结束',interrupted:'已中断',disconnected:'待核对',stopping:'正在结束',
-  manual:'手工完成','needs-review':'待核对',
+  pending:'待执行',connecting:'准备执行',switching:'切换用户',dispatch:'准备执行',running:'执行中',between:'执行中',waiting:'倒计时中',
+  succeeded:'通过',paused:'已暂停',failed:'失败',ended:'已结束',interrupted:'已中断',disconnected:'待核对',stopping:'正在切换',
+  exited:'已退出自动化',detached:'已交给终端',manual:'手工完成','needs-review':'待核对',
 };
 
 async function loadRunLog(before=null) {
@@ -316,7 +334,7 @@ async function loadRunLog(before=null) {
         const row=document.createElement('li'), status=document.createElement('span'), extra=document.createElement('small');
         status.dataset.status=step.status;status.textContent=runStatus[step.status];
         extra.textContent=[step.group,step.directory,step.exitCode!=null?`返回码 ${step.exitCode}`:'',
-          step.attempts>1?`执行 ${step.attempts} 次`:''].filter(Boolean).join(' · ');
+          step.attempts>1?`执行 ${step.attempts} 次`:'',step.waitSeconds?`设置等待 ${step.waitSeconds} 秒`:''].filter(Boolean).join(' · ');
         row.append(step.name,' · ',status,' ',extra);steps.append(row);
       }
       const last=document.createElement('p');last.textContent=run.message;
@@ -365,7 +383,8 @@ async function copyFlow(id,control) {
       name=Array.from(stem).slice(0,60-suffix.length).join('')+suffix;
       if(!names.has(name))break;
     }
-    const duplicate=await api('flows',{name,connection:source.connection,app:source.app||'',type:source.type||'',steps:source.steps,stepGroups:source.stepGroups});
+    const duplicate=await api('flows',{name,connection:source.connection,app:source.app||'',type:source.type||'',
+      steps:source.steps,stepGroups:source.stepGroups,stepWaits:source.stepWaits});
     await load();
     openEditor('flows',duplicate);
   } catch(error) { actionNotice(error.message); }
@@ -382,6 +401,7 @@ function showContext() {
 
 function drawSteps() {
   showContext();
+  $('#apply-edit-wait').disabled=!state.editor.steps.length;
   $('#step-list').replaceChildren(...state.editor.steps.map((entry,index)=>{
     const step=byId('commands',entry.id),li=document.createElement('li'); li.textContent=step?.name || '未知指令';
     li.className='flow-step';
@@ -395,7 +415,8 @@ function drawSteps() {
     group.oninput=()=>{entry.group=group.value.trim();};
     group.onchange=()=>{group.value=entry.group;drawGroupOptions();};
     bindStepDrag(handle,li,index);
-    li.replaceChildren(handle,number,name,group,button('移除',()=>{state.editor.steps.splice(index,1);drawSteps();}));return li;
+    li.replaceChildren(handle,number,name,group,waitInput(entry,`第 ${index+1} 步执行后等待（秒）`),
+      button('移除',()=>{state.editor.steps.splice(index,1);drawSteps();}));return li;
   }));
   drawGroupOptions();
 }
@@ -482,7 +503,7 @@ function openEditor(collection,item={}) {
   if($('#editor').open)return;
   const server=collection==='connections',command=collection==='commands',flow=collection==='flows';
   state.editor={collection,id:item.id,connection:item.connection,app:item.app||'',
-    steps:(item.steps||[]).map((id,index)=>({id,group:item.stepGroups?.[index]||''})),params:{...item.params},
+    steps:(item.steps||[]).map((id,index)=>({id,group:item.stepGroups?.[index]||'',wait:item.stepWaits?.[index]??0})),params:{...item.params},
     terminal:item.terminal,nested:item.nested,passwordSet:!!item.passwordSet,secretTouched:false};
   const defaultConnection=state.view==='library'?byId('servers',$('#library-server').value)?.connections[0]:selectedConnection()?.id;
   $('#editor-title').textContent=(item.id?'编辑':'新建')+(server?' SSH 连接':command?'快捷指令':'自动化流程');
@@ -495,6 +516,7 @@ function openEditor(collection,item={}) {
   $('#edit-name').value=item.name||'';$('#edit-host').value=item.host||'';$('#edit-port').value=item.port||22;$('#edit-login-user').value=item.user||'';
   $('#edit-type').value=item.type||'';$('#edit-user').value=item.user||byId('connections',$('#edit-connection').value)?.user||'';
   $('#edit-directory').value=item.directory||'';$('#edit-script').value=item.script||'';
+  $('#edit-wait-all').value='0';
   $('#edit-followup-prompt').value=item.followup?.prompt||'';
   $('#edit-followup-mode').value=item.followup?.mode||'auto';updateFollowupFields();
   const fields=passwordControls[collection];
@@ -512,7 +534,8 @@ function readEditor() {
   value.connection=$('#edit-connection').value;
   if(value.connection===editor.nested?.id)value.terminal=editor.terminal;
   value.app=value.connection===editor.connection?editor.app:'';value.type=$('#edit-type').value;
-  if(editor.collection==='flows')return {...value,steps:editor.steps.map(step=>step.id),stepGroups:editor.steps.map(step=>step.group)};
+  if(editor.collection==='flows')return {...value,steps:editor.steps.map(step=>step.id),
+    stepGroups:editor.steps.map(step=>step.group),stepWaits:editor.steps.map(step=>step.wait)};
   return {...value,script:$('#edit-script').value,user:$('#edit-user').value,directory:$('#edit-directory').value,params:editor.params,
     followup:{prompt:$('#edit-followup-prompt').value,mode:$('#edit-followup-mode').value}};
 }
@@ -540,7 +563,20 @@ $('#edit-connection').onchange=()=>{
   if(state.editor.collection==='flows'){state.editor.steps=[];drawSteps();}
   if(state.editor.collection==='commands')$('#edit-user').value=byId('connections',$('#edit-connection').value)?.user||'';
 };
-$('#add-step').onclick=()=>{const choice=$('#step-choice').value;if(choice&&state.editor.steps.length<24){state.editor.steps.push({id:choice,group:''});drawSteps();}};
+$('#add-step').onclick=()=>{const choice=$('#step-choice').value;if(choice&&state.editor.steps.length<24){state.editor.steps.push({id:choice,group:'',wait:0});drawSteps();}};
+$('#apply-edit-wait').onclick=()=>{
+  const input=$('#edit-wait-all');
+  if(!input.reportValidity())return;
+  for(const step of state.editor.steps)step.wait=input.value===''?0:input.valueAsNumber;
+  drawSteps();
+};
+$('#apply-run-wait').onclick=()=>{
+  const input=$('#run-wait-all');
+  if(!input.reportValidity())return;
+  const steps=stepsForGroups(state.parameters.steps,selectedGroups());
+  for(const step of steps.slice(0,-1))step.wait=input.value===''?0:input.valueAsNumber;
+  updateParameterGroups();
+};
 $('#cancel-edit').onclick=$('#editor-close').onclick=()=>$('#editor').close();
 $('#editor').addEventListener('close',()=>{Object.values(passwordControls).forEach(fields=>{$(fields.input).value='';});state.editor=null;});
 for(const fields of Object.values(passwordControls)){
@@ -595,7 +631,9 @@ $('#parameters-form').onsubmit=async event=>{
     section.dataset.group,Object.fromEntries($$('input',section).map(input=>[input.name,input.value])),
   ]));
   const { '': params={}, ...groupParams }=fields;
-  try{await execute({...preview.data,params,groups:selectedGroups(),groupParams,replaceRun:preview.replaceRun});$('#parameters').close();}
+  const groups=selectedGroups(), timedSteps=stepsForGroups(preview.steps,groups).slice(0,-1);
+  const stepWaits=preview.steps.map(step=>timedSteps.includes(step)?step.wait:step.savedWait);
+  try{await execute({...preview.data,params,groups,groupParams,stepWaits,replaceRun:preview.replaceRun});$('#parameters').close();}
   catch(error){message('#parameters-error',error.message);}finally{preview.submitting=false;updateRunAvailability();}
 };
 $('#cancel-delete').onclick=()=>$('#delete-dialog').close();
@@ -605,12 +643,15 @@ $('#delete-form').onsubmit=async event=>{
   catch(error){message('#delete-error',error.message);}finally{submit.disabled=false;}
 };
 
-function showLogin(){workspace.visible=false;workspace.layout();$('#workbench-navigation').hidden=true;$('#workspace').hidden=true;$('#login').hidden=false;}
+function showLogin(){
+  $$('dialog[open]').forEach(dialog=>dialog.close());workspace.visible=false;workspace.layout();
+  $('#workbench-navigation').hidden=true;$('#workspace').hidden=true;$('#login').hidden=false;
+}
 async function enter(){
-  await load();$('#workspace').hidden=false;$('#workbench-navigation').hidden=false;$('#login').hidden=true;
+  await load();await workspace.refresh(true);
+  $('#workspace').hidden=false;$('#workbench-navigation').hidden=false;$('#login').hidden=true;
   const view=sessionStorage.getItem('workbenchView');
   show(['terminal','library','servers','run-log'].includes(view)?view:state.model.connections.length?'terminal':'servers');
-  await workspace.refresh();
 }
 $('#login-form').onsubmit=async event=>{
   event.preventDefault();const submit=$('button[type="submit"]',event.currentTarget);submit.disabled=true;message('#login-error');

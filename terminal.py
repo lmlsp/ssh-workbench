@@ -28,7 +28,7 @@ BOOT = base64.b64encode((ROOT / 'shell-integration.sh').read_bytes()).decode()
 ESC = b'\x1b]777;OW:'
 DISPATCH = b'\x18\x07'
 CANCEL_DISPATCH = b'\x18\x0b'
-ACTIVE = {'connecting', 'switching', 'dispatch', 'running', 'between', 'paused', 'stopping'}
+ACTIVE = {'connecting', 'switching', 'dispatch', 'running', 'between', 'waiting', 'paused', 'stopping'}
 
 
 def ssh_args(connection, interactive):
@@ -89,6 +89,7 @@ class Terminal:
         self.closed = False
         self.busy_since = time.monotonic()
         self.run = None
+        self.wait_timer = None
         self.pending = b''
         self.prompt = b''
         self.signature = ESC + self.nonce.encode() + b':'
@@ -154,7 +155,7 @@ class Terminal:
             run = self.run
             self.on_run({
                 **{key: run[key] for key in ('id', 'kind', 'name', 'phase', 'message', 'user', 'startedAt', 'target')},
-                'steps': [{key: step[key] for key in ('name', 'group', 'directory', 'status', 'exitCode', 'attempts')
+                'steps': [{key: step[key] for key in ('name', 'group', 'directory', 'status', 'exitCode', 'attempts', 'waitSeconds')
                            if key in step} for step in run['steps']],
             })
         self.changed()
@@ -223,6 +224,7 @@ class Terminal:
             with self.condition:
                 self.closed = True
                 self.ready = False
+                self.cancel_wait()
                 if self.run and self.run['phase'] in ACTIVE:
                     if self.run['index'] < len(self.run['steps']):
                         step = self.run['steps'][self.run['index']]
@@ -289,13 +291,15 @@ class Terminal:
             self.prepare_ssh(route, current_run, *values)
         elif event == 'U' and len(values) == 1 and endpoint['id'] == self.endpoint['id']:
             password = None
-            if current_run and current_run['phase'] == 'switching' and values[0] == current_run['switchingTo']:
+            if (current_run and current_run['phase'] == 'switching' and not current_run['takeover']
+                    and values[0] == current_run['switchingTo']):
                 password = current_run.get('password')
             self.prepare_input('su', password)
         elif event == 'B' and current_run and current_run['phase'] == 'running' and values == [current_run['ticket']]:
             step = current_run['steps'][current_run['index']]
             if step.get('followup'):
-                self.prepare_input('custom', step.get('response'), prompt=step['followup']['prompt'])
+                response = None if current_run['takeover'] else step.get('response')
+                self.prepare_input('custom', response, prompt=step['followup']['prompt'])
         elif event == 'H' and len(values) == 4:
             user, directory, status, script = values
             self.remember(endpoint, user, directory, int(status), script)
@@ -309,6 +313,8 @@ class Terminal:
                 self.login_ticket.close()
                 self.login_ticket = None
             connected = self.completed_ssh_login(route, endpoint, values[0])
+            if self.run and self.run['phase'] == 'exited':
+                self.run.pop('manualUntilPrompt', None)
             self.interaction = None
             self.waiting_for_input = ''
             self.endpoint = endpoint
@@ -316,7 +322,7 @@ class Terminal:
             self.ready = True
             self.changed()
             if current_run and current_run['phase'] == 'stopping':
-                self.end_run()
+                self.finish_dispatch_cancel()
             elif connected and self.run and self.run['phase'] == 'running' and self.run['index'] == len(self.run['steps']) - 1:
                 self.run['steps'][self.run['index']].update(status='succeeded', exitCode=0)
                 self.run['index'] += 1
@@ -359,25 +365,26 @@ class Terminal:
             self.write(b'\x03')
             self.pause('命令不完整，请检查引号、括号或续行符。')
         elif event == 'X' and len(values) == 1 and current_run and current_run['phase'] == 'stopping':
-            self.end_run()
+            self.finish_dispatch_cancel()
         elif event == 'X' and len(values) == 1 and current_run and current_run['phase'] == 'dispatch':
             self.run['steps'][self.run['index']]['status'] = 'failed'
             self.run['ticket'] = None
             self.pause(values[0])
         elif event == 'R' and len(values) == 2 and current_run and current_run['ticket'] == values[0]:
+            if current_run['phase'] == 'stopping':
+                return
             current = self.run['steps'][self.run['index']]
             status = int(values[1])
+            interrupted = self.run.pop('interruptRequested', False)
             self.run['ticket'] = None
             current['exitCode'] = status
-            current['status'] = 'succeeded' if status == 0 else 'failed'
-            if self.run['takeover'] or self.run['phase'] == 'paused':
-                self.pause('当前步骤已返回，请选择重试或继续。')
+            current['status'] = 'interrupted' if interrupted else 'succeeded' if status == 0 else 'failed'
+            if interrupted:
+                self.pause('当前步骤已中断，可以重试或确认本步已手动完成。')
             elif status:
                 self.pause(f"{current['name']} 返回 {status}，可以在终端处理。")
             else:
-                self.run['index'] += 1
-                self.run['phase'] = 'between'
-                self.run_changed()
+                self.finish_step()
 
     def prepare_ssh(self, route, run, destination, port, account, login, host):
         port = int(port)
@@ -389,7 +396,7 @@ class Terminal:
         planned = step.get('sshLogin')
         managed = bool(planned and planned[0] == destination and planned[2] == account)
         response = None
-        if destination == host:
+        if destination == host and not (run and (run['takeover'] or run.get('manualUntilPrompt'))):
             if managed and planned[1] == port:
                 response = step.get('response')
             if response is None and self.ssh_password and account == login and self.context and (managed or not run or run['phase'] not in ACTIVE):
@@ -411,7 +418,8 @@ class Terminal:
                         'kind': kind, 'startedAt': int(time.time() * 1000),
                         'target': {key: self.endpoint[key] for key in ('name', 'host', 'port', 'via') if key in self.endpoint},
                         'connection': self.endpoint['id'],
-                        'takeover': False, 'ticket': None, 'switchTo': steps[0].get('switchTo') if len(steps) == 1 else None}
+                        'takeover': False, 'ticket': None, 'waitRemaining': 0, 'waitDeadline': None,
+                        'switchTo': steps[0].get('switchTo') if len(steps) == 1 else None}
             self.run_changed()
             self.advance()
 
@@ -431,14 +439,26 @@ class Terminal:
         if user != run['switchingTo'] or (run['switchTo'] == run['user'] and not run['switchAcknowledged']):
             if run['switchTo']:
                 run['steps'][run['index']]['status'] = 'failed'
-            self.pause('未能切换到所需用户。请处理终端中的提示，或重试。')
+                self.pause('未能切换到所需用户。请处理终端中的提示，或重试。')
+            else:
+                run['password'] = None
+                self.pause(f"请在终端切换到 {run['user']}，再继续。", before_step=True)
             return
         run['password'] = None
         if run['switchTo']:
             run['steps'][run['index']].update(status='succeeded', exitCode=0)
-            run['index'] += 1
-        run['phase'] = 'between'
+            self.finish_step()
+        else:
+            run['phase'] = 'between'
         self.advance()
+
+    def finish_step(self):
+        run = self.run
+        step = run['steps'][run['index']]
+        run['index'] += 1
+        run['waitRemaining'] = step.get('waitSeconds', 0) if run['index'] < len(run['steps']) else 0
+        run['phase'] = 'between'
+        self.run_changed()
 
     def advance(self):
         run = self.run
@@ -447,11 +467,17 @@ class Terminal:
         if run['index'] >= len(run['steps']):
             self.succeed(f"已切换到 {run['switchTo']}" if run['switchTo'] else '流程完成')
             return
+        if run['takeover']:
+            self.pause('已暂停后续步骤，可以在终端输入。', before_step=True)
+            return
         if self.context['user'] != run['user']:
             if run['switchTo'] or not run.get('password'):
-                self.pause(f"请在终端切换到 {run['user']}，再继续。")
+                self.pause(f"请在终端切换到 {run['user']}，再继续。", before_step=True)
                 return
             self.request_switch(run['user'], f"su - {shlex.quote(run['user'])}")
+            return
+        if run['waitRemaining']:
+            self.wait_before_next_step()
             return
         if run['switchTo']:
             step = run['steps'][run['index']]
@@ -464,20 +490,78 @@ class Terminal:
         run['phase'] = 'dispatch'
         run['ticket'] = secrets.token_hex(12)
         run['payloadSent'] = False
+        run.pop('interruptRequested', None)
         run['message'] = f"准备执行 {run['steps'][run['index']]['name']}"
         self.run_changed()
         self.write(DISPATCH)
+
+    def wait_before_next_step(self):
+        run = self.run
+        delay = run['waitRemaining']
+        deadline = time.monotonic() + delay
+        run.update(phase='waiting', waitDeadline=deadline, message='等待执行下一步')
+        timer = threading.Timer(delay, self.wait_finished, (run, deadline))
+        self.wait_timer = timer
+        timer.daemon = True
+        timer.start()
+        self.run_changed()
+
+    def cancel_wait(self):
+        if self.wait_timer:
+            self.wait_timer.cancel()
+            self.wait_timer = None
+
+    def wait_finished(self, run, deadline):
+        with self.condition:
+            if self.closed or self.run is not run or run['phase'] != 'waiting' or run['waitDeadline'] != deadline:
+                return
+            self.wait_timer = None
+            run.update(phase='between', waitRemaining=0, waitDeadline=None)
+            self.advance()
 
     def succeed(self, message):
         self.run.update(phase='succeeded', password=None, finishedAt=time.monotonic(), message=message)
         self.run_changed()
 
-    def pause(self, message):
-        self.run['phase'] = 'paused'
-        self.run['message'] = message
+    def pause(self, message, before_step=False):
+        run = self.run
+        if run['phase'] == 'waiting':
+            run['waitRemaining'] = max(0, run['waitDeadline'] - time.monotonic())
+            run['waitDeadline'] = None
+            self.cancel_wait()
+        run.update(phase='paused', message=message, beforeStep=before_step)
+        self.run_changed()
+
+    def cancel_dispatch(self, action, message):
+        # Keep the Readline handler alive long enough to cancel any unsubmitted command.
+        self.run.update(phase='stopping', cancelAction=action, message=message)
+        self.run_changed()
+
+    def finish_dispatch_cancel(self):
+        action = self.run['cancelAction']
+        if action == 'pause':
+            self.run['ticket'] = None
+            self.pause('已暂停后续步骤，可以在终端输入。', before_step=True)
+        elif action == 'leave':
+            self.leave_run()
+        else:
+            self.end_run()
+
+    def leave_run(self):
+        self.cancel_wait()
+        run = self.run
+        if run['index'] < len(run['steps']):
+            step = run['steps'][run['index']]
+            if step['status'] == 'running':
+                step['status'] = 'detached'
+        if self.interaction:
+            self.interaction.pop('response', None)
+        run.update(phase='exited', ticket=None, password=None, message='已退出自动化',
+                   manualUntilPrompt=run['phase'] in ('running', 'switching') and not self.ready)
         self.run_changed()
 
     def end_run(self):
+        self.cancel_wait()
         run = self.run
         if run['index'] < len(run['steps']):
             step = run['steps'][run['index']]
@@ -492,12 +576,16 @@ class Terminal:
         with self.condition:
             phase = self.run['phase'] if self.run else None
             if phase == 'stopping':
-                raise ValueError('正在结束流程，请稍等片刻')
+                raise ValueError('流程正在切换状态，请稍等片刻')
             if phase == 'dispatch':
                 raise ValueError('正在发送命令，请稍等片刻')
-            if (phase in ('running', 'between') and not self.run['takeover'] and not self.waiting_for_input
+            if phase == 'running' and text == '\x03':
+                self.run['interruptRequested'] = True
+                if not self.run['takeover']:
+                    self.pause_automation()
+            if (phase in ('running', 'between', 'waiting') and not self.run['takeover'] and not self.waiting_for_input
                     and not (self.interaction and self.interaction['kind'] == 'ssh')):
-                raise ValueError('请先接管终端再输入')
+                raise ValueError('请先暂停后续步骤再输入')
             if text and self.ready:
                 self.ready = False
                 self.changed()
@@ -506,50 +594,82 @@ class Terminal:
                 self.waiting_for_input = ''
                 self.changed()
 
+    def pause_automation(self):
+        run = self.run
+        if run['phase'] == 'paused':
+            return
+        run['takeover'] = True
+        if self.interaction:
+            self.interaction.pop('response', None)
+        if run['phase'] == 'dispatch':
+            self.cancel_dispatch('pause', '正在暂停后续步骤')
+        elif run['phase'] == 'waiting':
+            self.pause('已暂停倒计时，可以在终端输入。', before_step=True)
+        else:
+            run['message'] = '已暂停后续。当前命令可以继续，可以在终端输入。'
+            self.run_changed()
+
+    def require_prompt_for(self, user):
+        if not self.ready or not self.context:
+            raise ValueError('请等当前命令返回到终端提示符')
+        if self.run['connection'] != self.endpoint['id']:
+            raise ValueError('请先回到开始流程时的 SSH 连接')
+        if self.context['user'] != user:
+            raise ValueError(f'请先在终端切换到 {user}')
+
+    def resume_automation(self):
+        run = self.run
+        if run['phase'] == 'paused':
+            if not run.get('beforeStep'):
+                raise ValueError('请重试本步或确认本步已手动完成')
+            self.require_prompt_for(run['user'])
+            run.update(phase='between', takeover=False)
+            self.advance()
+        elif run['takeover']:
+            run.update(takeover=False, message='已恢复自动化，等待当前步骤结束。')
+            self.run_changed()
+            self.advance()
+        else:
+            raise ValueError('当前流程未暂停')
+
     def control(self, action):
         with self.condition:
             if not self.run or self.run['phase'] not in ACTIVE:
                 raise ValueError('没有可操作的运行任务')
             run = self.run
             if run['phase'] == 'stopping':
-                raise ValueError('正在结束流程，请稍等片刻')
-            if action == 'takeover':
-                run['takeover'] = True
-                if self.interaction:
-                    self.interaction.pop('response', None)
-                if run['phase'] in ('between', 'connecting', 'switching'):
-                    self.pause('已接管终端，处理完后可以继续。')
+                raise ValueError('流程正在切换状态，请稍等片刻')
+            if action in ('takeover', 'pause'):
+                self.pause_automation()
+            elif action == 'resume':
+                self.resume_automation()
+            elif action == 'leave':
+                if run['phase'] == 'dispatch':
+                    self.cancel_dispatch(action, '正在退出自动化')
                 else:
-                    run['message'] = '已接管。当前命令仍在终端内。'
-                    self.run_changed()
+                    self.leave_run()
             elif action == 'end':
                 if run['phase'] == 'dispatch':
-                    # The shell binding may be reading the payload in non-canonical mode.
-                    # Cancel through that binding before it can submit the command.
-                    run.update(phase='stopping', message='正在结束流程')
-                    self.run_changed()
+                    self.cancel_dispatch(action, '正在结束流程')
                     return
                 if run['connection'] == self.endpoint['id'] and (run['phase'] == 'running' or not self.ready):
                     self.write(b'\x03')
                 self.end_run()
             elif action in ('retry', 'next'):
-                if run['phase'] != 'paused' or not self.ready or not self.context:
-                    raise ValueError('请等当前命令返回到终端提示符')
-                if run['connection'] != self.endpoint['id']:
-                    raise ValueError('请先回到开始流程时的 SSH 连接')
+                if run['phase'] != 'paused' or run.get('beforeStep'):
+                    raise ValueError('当前没有需要处理的步骤')
                 expected = run['switchTo'] if action == 'next' and run['switchTo'] else run['user']
-                if self.context['user'] != expected:
-                    raise ValueError(f'请先在终端切换到 {expected}')
+                self.require_prompt_for(expected)
                 step = run['steps'][run['index']]
+                run['takeover'] = False
                 if action == 'next':
                     if step['status'] != 'succeeded':
                         step['status'] = 'manual'
-                    run['index'] += 1
+                    self.finish_step()
                 else:
                     step['status'] = 'pending'
                     step.pop('exitCode', None)
-                run['takeover'] = False
-                run['phase'] = 'between'
+                    run['phase'] = 'between'
                 self.advance()
 
     def events(self, after, wait):
@@ -561,6 +681,12 @@ class Terminal:
             if self.run:
                 source = self.run
                 run = {key: source[key] for key in ('id', 'phase', 'name', 'index', 'message', 'takeover', 'user', 'switchTo', 'connection')}
+                if source['phase'] == 'paused':
+                    run['beforeStep'] = source.get('beforeStep', False)
+                if source['phase'] == 'waiting':
+                    run['waitMs'] = max(0, round((source['waitDeadline']-time.monotonic()) * 1000))
+                elif source['phase'] == 'paused' and source['waitRemaining']:
+                    run['waitMs'] = round(source['waitRemaining'] * 1000)
                 if source['finishedAt'] is not None:
                     run['completionAgeMs'] = int((time.monotonic() - source['finishedAt']) * 1000)
                 run['steps'] = [{key: step[key] for key in ('name', 'status')} for step in source['steps']]
