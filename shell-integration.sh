@@ -26,8 +26,10 @@ __ow_emit() {
 
 __ow_latest_command() {
     local line
-    line=$(HISTTIMEFORMAT= builtin history 1)
-    [[ $line =~ ^[[:space:]]*([0-9]+)[\ \*]+(.*)$ ]] || return 1
+    # List the latest entry without changing the login shell's timestamp format.
+    # Turning history off in the subshell lets fc list a first, single-line entry.
+    line=$(set +o history; builtin fc -l -- -0 -0 2>/dev/null) || return 1
+    [[ $line =~ ^([0-9]+)$'\t'[\ \*]?(.*)$ ]] || return 1
     __ow_latest_number=${BASH_REMATCH[1]}
     __ow_latest_script=${BASH_REMATCH[2]}
 }
@@ -53,8 +55,7 @@ __ow_prompt() {
 }
 
 __ow_read_step() {
-    local count chunk encoded='' ticket directory script n
-    IFS= read -rs -t 6 count || return
+    local count=$1 chunk encoded='' ticket directory script n
     [[ $count =~ ^[0-9]{1,2}$ && $count -ge 1 && $count -le 32 ]] || return
     for ((n=0; n<count; n++)); do
         IFS= read -rs -t 6 chunk || return
@@ -74,7 +75,13 @@ __ow_dispatch() {
         return
     fi
     __ow_emit D
-    if ! __ow_read_step; then
+    local count=''
+    if ! IFS= read -rs -t 6 count; then count=''; fi
+    if [[ $count == 0 ]]; then
+        __ow_emit P "$__ow_user" "$PWD"
+        return
+    fi
+    if ! __ow_read_step "$count"; then
         __ow_emit X '未能接收快捷指令，请重试。'
         __ow_emit P "$__ow_user" "$PWD"
         return
@@ -96,6 +103,14 @@ __ow_dispatch() {
     fi
     READLINE_POINT=${#READLINE_LINE}
     __ow_emit A "$__ow_pending_ticket"
+}
+
+__ow_cancel_dispatch() {
+    [[ -n ${__ow_pending_ticket:-} ]] || return
+    READLINE_LINE=''
+    READLINE_POINT=0
+    unset __ow_pending_ticket __ow_pending_directory __ow_pending_script
+    __ow_emit P "$__ow_user" "$PWD"
 }
 
 ssh() {
@@ -200,5 +215,8 @@ __ow_record_switch
 unset OW_PARENT
 bind -m emacs-standard -x '"\C-x\C-g":__ow_dispatch'
 bind -m vi-insert -x '"\C-x\C-g":__ow_dispatch'
+bind -m emacs-standard -x '"\C-x\C-k":__ow_cancel_dispatch'
+bind -m vi-insert -x '"\C-x\C-k":__ow_cancel_dispatch'
 PROMPT_COMMAND=(__ow_prompt "${PROMPT_COMMAND[@]}")
 PS0="${PS0:-}"'${__ow_pending_ticket:+$(__ow_emit B "$__ow_pending_ticket")}'
+PS2="${PS2:-}"'${__ow_pending_ticket:+$(__ow_emit I "$__ow_pending_ticket")}'

@@ -3,7 +3,7 @@
 const $ = (selector, root=document) => root.querySelector(selector);
 const $$ = (selector, root=document) => Array.from(root.querySelectorAll(selector));
 const state = {view:'terminal', model:{servers:[],connections:[],commands:[],flows:[]}, editor:null, side:'flows'};
-const activePhases = ['connecting','switching','dispatch','running','between','paused'];
+const activePhases = ['connecting','switching','dispatch','running','between','paused','stopping'];
 const workspace = new TerminalWorkspace();
 const passwordControls={
   commands:{input:'#edit-secret',toggle:'#toggle-secret',clear:'#clear-secret',endpoint:'password',hint:'例如 SSH 或 su 密码'},
@@ -187,7 +187,7 @@ async function connect(id) {
   message('#notice');
   try{
     const opened=await api('terminal',{connection:id});
-    await workspace.refresh();
+    if(!await workspace.refresh())return;
     show('terminal'); workspace.focus(opened.id,true);
   }
   catch(error){message('#notice',error.message);}
@@ -290,7 +290,7 @@ function updateRunAvailability() {
 
 const runStatus = {
   pending:'待执行',connecting:'准备执行',switching:'切换用户',dispatch:'准备执行',running:'执行中',between:'执行中',
-  succeeded:'通过',paused:'已暂停',failed:'失败',ended:'已结束',interrupted:'已中断',disconnected:'待核对',
+  succeeded:'通过',paused:'已暂停',failed:'失败',ended:'已结束',interrupted:'已中断',disconnected:'待核对',stopping:'正在结束',
   manual:'手工完成','needs-review':'待核对',
 };
 

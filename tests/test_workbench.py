@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import pwd
 import subprocess
 import tempfile
 import threading
@@ -9,7 +10,8 @@ from unittest.mock import Mock, patch
 
 import auth
 import catalog
-from terminal import Terminal, pack, routed_endpoint
+from run_log import RunLog
+from terminal import CANCEL_DISPATCH, Terminal, pack, routed_endpoint
 import workbench
 
 
@@ -339,3 +341,80 @@ class PromptTests(unittest.TestCase):
         term.respond_to_prompt()
         term.write.assert_called_once()
         self.assertEqual(term.waiting_for_input, '等待输入密码')
+
+
+class TerminalDispatchTests(unittest.TestCase):
+    def setUp(self):
+        self.term = Terminal.__new__(Terminal)
+        self.term.condition = threading.RLock()
+        self.term.connection = self.term.endpoint = {'id': 'example'}
+        self.term.ready = False
+        self.term.login_ticket = self.term.interaction = self.term.on_run = None
+        self.term.run = {'phase': 'dispatch', 'connection': 'example', 'ticket': 'step-ticket',
+                         'payloadSent': False, 'index': 0, 'steps': [{'status': 'pending'}]}
+        self.term.write = Mock()
+        self.term.changed = Mock()
+
+    def test_stop_while_shell_requests_payload_sends_cancel_count(self):
+        self.term.control('end')
+        self.assertEqual(self.term.run['phase'], 'stopping')
+        self.term.write.assert_not_called()
+        self.term.marker(['', 'D'])
+        self.term.write.assert_called_once_with(b'0\n')
+        self.term.marker(['', 'P', 'operator', '/srv/example'])
+        self.assertEqual(self.term.run['phase'], 'ended')
+        self.assertTrue(self.term.ready)
+
+    def test_stop_after_payload_clears_the_unsubmitted_line(self):
+        self.term.run['payloadSent'] = True
+        self.term.control('end')
+        self.term.marker(['', 'A', 'step-ticket'])
+        self.term.write.assert_called_once_with(CANCEL_DISPATCH)
+        self.term.marker(['', 'P', 'operator', '/srv/example'])
+        self.assertEqual(self.term.run['phase'], 'ended')
+
+    def test_incomplete_command_is_interrupted_and_failed(self):
+        self.term.run['phase'] = 'running'
+        self.term.marker(['', 'I', 'step-ticket'])
+        self.term.write.assert_called_once_with(b'\x03')
+        self.assertEqual(self.term.run['steps'][0], {'status': 'failed', 'exitCode': 2})
+        self.term.marker(['', 'R', 'step-ticket', '130'])
+        self.term.marker(['', 'P', 'operator', '/srv/example'])
+        self.assertEqual(self.term.run['phase'], 'paused')
+        self.assertTrue(self.term.ready)
+
+
+class ShellHistoryTests(unittest.TestCase):
+    def test_first_command_is_recorded_with_read_only_history_timestamp_format(self):
+        actor = pwd.getpwuid(os.getuid()).pw_name
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / '.bashrc').write_text("readonly HISTTIMEFORMAT='%F %T '\n")
+            account = SimpleNamespace(pw_name=actor, pw_dir=home)
+            with patch('terminal.LOCAL_TERMINAL_ENABLED', True), patch('terminal.pwd.getpwuid', return_value=account):
+                terminal = Terminal({'kind': 'local', 'id': 'fixture'})
+            try:
+                with terminal.condition:
+                    self.assertTrue(terminal.condition.wait_for(lambda: terminal.ready, timeout=5))
+                    command = 'printf "%s\\n" first-command'
+                    terminal.input(command + '\r')
+                    self.assertTrue(terminal.condition.wait_for(lambda: terminal.ready, timeout=5))
+                    self.assertEqual([entry['script'] for entry in terminal.history], [command])
+            finally:
+                terminal.close()
+
+
+class RunLogTests(unittest.TestCase):
+    def test_earlier_page_keeps_immutable_order_after_updates(self):
+        with tempfile.TemporaryDirectory() as data:
+            path = Path(data) / 'runs.sqlite3'
+            log = RunLog(path)
+            self.assertEqual(log.page(), {'runs': [], 'before': None})
+            for index in range(32):
+                log.save({'id': str(index), 'phase': 'running'})
+            log.save({'id': '0', 'phase': 'succeeded'})
+            latest = RunLog(path).page()
+            older = RunLog(path).page(latest['before'])
+            self.assertEqual([entry['id'] for entry in latest['runs']], [str(index) for index in range(31, 1, -1)])
+            self.assertEqual([entry['id'] for entry in older['runs']], ['1', '0'])
+            self.assertEqual(older['runs'][1]['phase'], 'succeeded')
+            self.assertIsNone(older['before'])

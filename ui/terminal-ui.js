@@ -211,13 +211,13 @@ class TerminalPanel {
         const item=document.createElement('li'); item.dataset.status=step.status;
         item.textContent=`${step.name} · ${runStatus[step.status]}`; return item;
       }));
-      $('[data-action="takeover"]',this.node).hidden = !activePhases.includes(run.phase) || run.takeover || run.phase === 'paused';
+      $('[data-action="takeover"]',this.node).hidden = !activePhases.includes(run.phase) || run.takeover || ['paused','stopping'].includes(run.phase);
       for (const action of ['retry','next']) {
         const node = $(`[data-action="${action}"]`,this.node);
         const expected = action==='next' && run.switchTo ? run.switchTo : run.user;
         node.hidden = run.phase !== 'paused'; node.disabled = !packet.ready || context?.user !== expected || run.connection!==this.connectionId;
       }
-      $('[data-action="end"]',this.node).hidden = !activePhases.includes(run.phase);
+      $('[data-action="end"]',this.node).hidden = !activePhases.includes(run.phase) || run.phase==='stopping';
     }
     if (packet.closed || oldPhase !== run?.phase || changedConnection) this.workspace.drawTabs();
     if ($('#parameters').open && state.parameters?.data.terminal===packet.id) updateRunAvailability();
@@ -238,6 +238,8 @@ class TerminalWorkspace {
     this.visible = false;
     this.sizes = new Map();
     this.ordinals = new Map();
+    this.refreshSequence = 0;
+    this.lastAppliedRefresh = 0;
     try {
       const saved = JSON.parse(sessionStorage.getItem('terminalLayout'));
       this.selected = saved?.selected || saved?.slots?.[saved.focused] || null;
@@ -249,7 +251,10 @@ class TerminalWorkspace {
   }
 
   async refresh() {
+    const sequence = ++this.refreshSequence;
     const entries = await api('terminals');
+    if(sequence < this.lastAppliedRefresh)return false;
+    this.lastAppliedRefresh = sequence;
     const ids = new Set(entries.map(entry=>entry.id));
     for (const [id,panel] of this.panels) if (!ids.has(id)) { panel.dispose(); this.panels.delete(id); }
     this.dismissed=new Set([...this.dismissed].filter(id=>ids.has(id)));
@@ -273,6 +278,7 @@ class TerminalWorkspace {
     }
     if (!this.panels.has(this.selected)) this.selected=this.panels.keys().next().value || null;
     this.layout();
+    return true;
   }
 
   active() { return this.panels.get(this.selected); }

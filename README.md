@@ -63,7 +63,7 @@ wget -O /var/tmp/portal.war https://builds.example.invalid/releases/portal.war
 
 ## 跳板机、密码和需要输入的命令
 
-- **通过跳板机登录**。先打开跳板机终端，再照常输入 `ssh deploy@app-test.example.invalid`、`ssh deploy@192.0.2.20`，或用 `ssh -p 2222 deploy@app-test.example.invalid` 指定端口。目标 Bash 就绪后，右侧会切换到目标连接。首次将目标上的命令保存为快捷指令时，会一并保存该连接。同一路径登录可以复用指令，输入 `exit` 返回上一层。附带远程命令或其它选项的 SSH 调用按 OpenSSH 的方式运行。
+- **通过跳板机登录**。先打开跳板机终端，按登录提示输入密码和 MFA 验证码。接着照常输入 `ssh deploy@app-test.example.invalid`、`ssh deploy@192.0.2.20`，或用 `ssh -p 2222 deploy@app-test.example.invalid` 指定端口。目标 Bash 就绪后，右侧会切换到目标连接。首次将目标上的命令保存为快捷指令时，会一并保存该连接。同一路径登录可以复用指令，输入 `exit` 返回上一层。附带远程命令或其它选项的 SSH 调用按 OpenSSH 的方式运行。
 - **保存登录后的密码输入**。把交互式二次 SSH 或 `su - appuser` 保存为快捷指令，在「下一步输入」里填写密码。遇到匹配的密码提示时会尝试自动填写一次。手动输入同一路径的二次 SSH 命令时，主机、端口和账号匹配且已保存的密码唯一，也可自动填写。编辑时会看到圆点和「已保存」，点击「显示」可查看或更换。
 - **回答自定义提示**。例如程序会显示 `Continue? [y/N]`，将它填入「自定义提示」，选择「自动输入」，再把「下一步输入」设为 `y`。如果内容每次都不同，选「提示我手动输入」，等终端显示等待提示后继续输入。程序自身可能回显输入。
 

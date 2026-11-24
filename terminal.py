@@ -27,7 +27,8 @@ from ssh_login import PasswordTicket
 BOOT = base64.b64encode((ROOT / 'shell-integration.sh').read_bytes()).decode()
 ESC = b'\x1b]777;OW:'
 DISPATCH = b'\x18\x07'
-ACTIVE = {'connecting', 'switching', 'dispatch', 'running', 'between', 'paused'}
+CANCEL_DISPATCH = b'\x18\x0b'
+ACTIVE = {'connecting', 'switching', 'dispatch', 'running', 'between', 'paused', 'stopping'}
 
 
 def ssh_args(connection, interactive):
@@ -314,7 +315,9 @@ class Terminal:
             self.context = {'user': values[0], 'directory': values[1]}
             self.ready = True
             self.changed()
-            if connected and self.run and self.run['phase'] == 'running' and self.run['index'] == len(self.run['steps']) - 1:
+            if current_run and current_run['phase'] == 'stopping':
+                self.end_run()
+            elif connected and self.run and self.run['phase'] == 'running' and self.run['index'] == len(self.run['steps']) - 1:
                 self.run['steps'][self.run['index']].update(status='succeeded', exitCode=0)
                 self.run['index'] += 1
                 self.run['ticket'] = None
@@ -329,14 +332,19 @@ class Terminal:
             else:
                 self.advance()
         elif event == 'D':
-            if current_run and current_run['phase'] == 'dispatch' and not current_run['payloadSent']:
+            if current_run and current_run['phase'] == 'stopping' and not current_run['payloadSent']:
+                self.write(b'0\n')
+            elif current_run and current_run['phase'] == 'dispatch' and not current_run['payloadSent']:
                 current = self.run['steps'][self.run['index']]
                 payload = pack([self.run['ticket'], current['directory'], current['script']])
                 chunks = [payload[i:i + 1400] for i in range(0, len(payload), 1400)]
                 self.run['payloadSent'] = True
                 self.write(str(len(chunks)).encode() + b'\n' + b'\n'.join(chunks) + b'\n')
-        elif event == 'A' and current_run and current_run['phase'] == 'dispatch' and values == [current_run['ticket']]:
-            if not self.run['payloadSent']:
+        elif event == 'A' and current_run and values == [current_run['ticket']] and current_run['payloadSent']:
+            if current_run['phase'] == 'stopping':
+                self.write(CANCEL_DISPATCH)
+                return
+            if current_run['phase'] != 'dispatch':
                 return
             current = self.run['steps'][self.run['index']]
             self.run['phase'] = 'running'
@@ -345,6 +353,13 @@ class Terminal:
             current['attempts'] = current.get('attempts', 0) + 1
             self.write(b'\r')
             self.run_changed()
+        elif event == 'I' and current_run and current_run['phase'] == 'running' and values == [current_run['ticket']]:
+            current_run['steps'][current_run['index']].update(status='failed', exitCode=2)
+            current_run['ticket'] = None
+            self.write(b'\x03')
+            self.pause('命令不完整，请检查引号、括号或续行符。')
+        elif event == 'X' and len(values) == 1 and current_run and current_run['phase'] == 'stopping':
+            self.end_run()
         elif event == 'X' and len(values) == 1 and current_run and current_run['phase'] == 'dispatch':
             self.run['steps'][self.run['index']]['status'] = 'failed'
             self.run['ticket'] = None
@@ -462,9 +477,22 @@ class Terminal:
         self.run['message'] = message
         self.run_changed()
 
+    def end_run(self):
+        run = self.run
+        if run['index'] < len(run['steps']):
+            step = run['steps'][run['index']]
+            if step['status'] == 'running':
+                step['status'] = 'interrupted'
+        run.update(phase='ended', ticket=None, password=None, message='已结束流程')
+        self.interaction = None
+        self.waiting_for_input = ''
+        self.run_changed()
+
     def input(self, text):
         with self.condition:
             phase = self.run['phase'] if self.run else None
+            if phase == 'stopping':
+                raise ValueError('正在结束流程，请稍等片刻')
             if phase == 'dispatch':
                 raise ValueError('正在发送命令，请稍等片刻')
             if (phase in ('running', 'between') and not self.run['takeover'] and not self.waiting_for_input
@@ -483,6 +511,8 @@ class Terminal:
             if not self.run or self.run['phase'] not in ACTIVE:
                 raise ValueError('没有可操作的运行任务')
             run = self.run
+            if run['phase'] == 'stopping':
+                raise ValueError('正在结束流程，请稍等片刻')
             if action == 'takeover':
                 run['takeover'] = True
                 if self.interaction:
@@ -493,19 +523,15 @@ class Terminal:
                     run['message'] = '已接管。当前命令仍在终端内。'
                     self.run_changed()
             elif action == 'end':
-                if run['connection'] == self.endpoint['id'] and (run['phase'] in ('running', 'dispatch') or not self.ready):
+                if run['phase'] == 'dispatch':
+                    # The shell binding may be reading the payload in non-canonical mode.
+                    # Cancel through that binding before it can submit the command.
+                    run.update(phase='stopping', message='正在结束流程')
+                    self.run_changed()
+                    return
+                if run['connection'] == self.endpoint['id'] and (run['phase'] == 'running' or not self.ready):
                     self.write(b'\x03')
-                run['phase'] = 'ended'
-                if run['index'] < len(run['steps']):
-                    step = run['steps'][run['index']]
-                    if step['status'] == 'running':
-                        step['status'] = 'interrupted'
-                self.interaction = None
-                self.waiting_for_input = ''
-                run['ticket'] = None
-                run['password'] = None
-                run['message'] = '已结束流程'
-                self.run_changed()
+                self.end_run()
             elif action in ('retry', 'next'):
                 if run['phase'] != 'paused' or not self.ready or not self.context:
                     raise ValueError('请等当前命令返回到终端提示符')
