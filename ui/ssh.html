@@ -7,10 +7,12 @@
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/vendor/xterm.css">
   <link rel="stylesheet" href="/ssh.css">
+  <link rel="stylesheet" href="/vendor/workspace.css">
   <script src="/vendor/xterm.js" defer></script>
   <script src="/vendor/fit.js" defer></script>
   <script src="/terminal-ui.js" defer></script>
   <script src="/ssh.js" defer></script>
+  <script type="module" src="/vendor/workspace.js"></script>
 </head>
 <body>
   <header class="topbar">
@@ -22,7 +24,7 @@
         <button data-view="run-log">执行日志</button>
         <button data-view="servers">服务器</button>
       </nav>
-      <span class="machine" id="head-status"></span>
+      <div class="masthead-tools"><span class="machine" id="head-status"></span><div id="aura-tools"></div></div>
     </div>
   </header>
 
@@ -44,6 +46,7 @@
         <div class="actions"><button type="button" id="open-local-terminal" hidden>本机终端</button><button type="button" id="toggle-split" aria-pressed="false" disabled>平铺窗口</button></div>
       </div>
       <p id="terminal-empty" hidden>先在「服务器」添加一个 SSH 连接。</p>
+      <div id="aura-workspace"></div>
       <div class="terminal-desk">
         <div class="terminal-stack">
           <div id="terminal-tabs" class="terminal-tabs" aria-label="已打开终端" role="group"></div>
@@ -56,13 +59,16 @@
             <button type="button" id="sidebar-hide" class="sidebar-hide">收起</button>
           </div>
           <p id="sidebar-target" class="sidebar-target" hidden></p>
+          <div id="aura-operation-tabs"></div>
           <div class="sidebar-modes" aria-label="当前服务器面板" role="group">
             <button type="button" data-side="flows" aria-pressed="true">自动化流程</button>
             <button type="button" data-side="commands" aria-pressed="false">快捷指令</button>
             <button type="button" data-side="history" aria-pressed="false">执行记录</button>
           </div>
-          <p id="sidebar-notice" class="error" role="alert" hidden></p>
-          <p id="sidebar-empty" class="sidebar-empty" hidden></p><ul id="sidebar-items" class="sidebar-items"></ul>
+          <div id="sidebar-content" role="tabpanel" aria-label="当前服务器操作">
+            <p id="sidebar-notice" class="error" role="alert" hidden></p>
+            <p id="sidebar-empty" class="sidebar-empty" hidden></p><ul id="sidebar-items" class="sidebar-items"></ul>
+          </div>
         </aside>
       </div>
       <button type="button" id="sidebar-toggle" class="primary sidebar-toggle" aria-controls="terminal-sidebar" aria-expanded="false">快捷操作</button>

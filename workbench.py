@@ -50,6 +50,8 @@ ASSETS = {
     '/vendor/xterm.js': ('node_modules/@xterm/xterm/lib/xterm.js', 'text/javascript; charset=utf-8'),
     '/vendor/xterm.css': ('node_modules/@xterm/xterm/css/xterm.css', 'text/css; charset=utf-8'),
     '/vendor/fit.js': ('node_modules/@xterm/addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8'),
+    '/vendor/workspace.js': ('dist/workspace.js', 'text/javascript; charset=utf-8'),
+    '/vendor/workspace.css': ('dist/workspace.css', 'text/css; charset=utf-8'),
 }
 
 
@@ -409,6 +411,8 @@ def main():
         parser.error('Run python3 workbench.py set-password first')
     if not (ROOT / 'ui/node_modules/@xterm/xterm/lib/xterm.js').is_file():
         parser.error('Run npm ci --prefix ui first')
+    if not all((ROOT / 'ui/dist' / file).is_file() for file in ('workspace.js', 'workspace.css')):
+        parser.error('Run npm run build --prefix ui first')
     try:
         tls, networks = listener_options(BIND_ADDRESS, TLS_CERT, TLS_KEY, ALLOWED_NETWORKS, ALLOW_HTTP)
     except (ValueError, OSError) as exc:

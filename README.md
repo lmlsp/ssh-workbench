@@ -16,6 +16,8 @@ SSH Workbench 把这些操作留在熟悉的终端里。第一次照常手动操
 2. 在服务器列表点击「连接」，或回到「终端」选中连接后点击「添加窗口」。部署者启用了「本机终端」时，也可以直接打开工作台所在主机的 Bash。
 3. 可以打开多个窗口，点标签或窗口内的「选中」切换当前终端。「平铺窗口」用于并排查看，「单窗口」用于聚焦一个终端。拖动窗口右下角可以调节大小。关闭一个窗口后，下次会优先复用空出的最小编号。
 
+工作区使用 Vue 3 和 PrimeVue Aura，终端使用 xterm.js。左侧可打开已保存的连接，中间显示终端，右侧查看快捷指令、流程和执行记录。顶部「外观」可以分别设置工作台主题和终端配色，终端背景色和文字色也可自定义。偏好保存在当前浏览器。
+
 ### 2. 把常用命令保存下来
 
 1. 在终端执行一条命令，例如 `pwd` 或 `cd /srv/demo`。等 Bash 回到命令提示符。
@@ -81,13 +83,14 @@ wget -O /var/tmp/portal.war https://builds.example.invalid/releases/portal.war
 
 ## 安装和部署
 
-需要 Linux、Python 3.10+、Node.js/npm 和 OpenSSH 客户端。SSH 目标需要 Bash 和常见的 coreutils，切换账号使用 util-linux 的 `su`。
+需要 Linux、Python 3.10+ 和 OpenSSH 客户端。构建界面需要 Node.js 和 npm，建议使用 Node.js 22 或更新的受支持版本。SSH 目标需要 Bash 和常见的 coreutils，切换账号使用 util-linux 的 `su`。
 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
 npm ci --prefix ui
+npm run build --prefix ui
 python workbench.py set-password
 python workbench.py
 ```

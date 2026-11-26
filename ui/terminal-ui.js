@@ -25,6 +25,7 @@ class TerminalPanel {
         ? 'resume' : node.dataset.action);
     });
     this.applySize();
+    this.applyAppearance();
     this.bindResizeHandle();
   }
 
@@ -35,7 +36,7 @@ class TerminalPanel {
   open() {
     if (this.terminal) return;
     this.terminal = new Terminal({ fontFamily:'Cascadia Mono, Noto Sans Mono CJK SC, monospace', fontSize:14, cursorBlink:true,
-      theme:{background:'#111c2c', foreground:'#e4edf9', cursor:'#abceff', selectionBackground:'#345989'}, scrollback:4500 });
+      theme:this.workspace.appearance?.colors||{background:'#111c2c', foreground:'#e4edf9', cursor:'#abceff', selectionBackground:'#345989'}, scrollback:4500 });
     this.fit = new FitAddon.FitAddon();
     this.terminal.loadAddon(this.fit);
     this.terminal.open(this.mountPoint);
@@ -61,6 +62,13 @@ class TerminalPanel {
     this.fit.fit();
   }
 
+  applyAppearance() {
+    const appearance=this.workspace.appearance;
+    if(!appearance)return;
+    for(const [name,value] of Object.entries(appearance.variables))this.node.style.setProperty(name,value);
+    if(this.terminal)this.terminal.options.theme=appearance.colors;
+  }
+
   applySize() {
     const size = this.workspace.sizes.get(this.meta.id) || {};
     for (const axis of ['width','height']) {
@@ -75,7 +83,8 @@ class TerminalPanel {
     const container = this.node.parentElement;
     if (width !== undefined && container?.classList.contains('tiled')) {
       const available = container.clientWidth;
-      size.width = Math.round(Math.max(Math.min(380, available), Math.min(width, available)));
+      const minimum = parseFloat(getComputedStyle(container).getPropertyValue('--terminal-min-width')) || 380;
+      size.width = Math.round(Math.max(Math.min(minimum, available), Math.min(width, available)));
     }
     if (height !== undefined) size.height = Math.round(Math.max(200, Math.min(height, 1400)));
     this.workspace.sizes.set(this.meta.id,size);
@@ -251,6 +260,7 @@ class TerminalPanel {
     if ($('#parameters').open && state.parameters?.data.terminal===packet.id) updateRunAvailability();
     const newest = packet.history?.[0];
     if (this.workspace.active() === this) {
+      publishWorkspaceState();
       const changedHistory=oldHistory!==newest?.id;
       if (changedHistory && newest?.switchTo && !run) state.side='history';
       if (oldUser!==context?.user || packet.closed || changedConnection || changedHistory && state.side==='history')renderSidebar();
@@ -311,6 +321,11 @@ class TerminalWorkspace {
   }
 
   active() { return this.panels.get(this.selected); }
+
+  setAppearance(colors,variables) {
+    this.appearance={colors,variables};
+    for(const panel of this.panels.values())panel.applyAppearance();
+  }
 
   focus(id, withKeyboard=false) {
     if (!this.panels.has(id)) return;

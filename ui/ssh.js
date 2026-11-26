@@ -5,6 +5,8 @@ const $$ = (selector, root=document) => Array.from(root.querySelectorAll(selecto
 const state = {view:'terminal', model:{servers:[],connections:[],commands:[],flows:[]}, editor:null, side:'flows'};
 const activePhases = ['connecting','switching','dispatch','running','between','waiting','paused','stopping'];
 const workspace = new TerminalWorkspace();
+const workspaceListeners = new Set();
+let lastWorkspaceState;
 const passwordControls={
   commands:{input:'#edit-secret',toggle:'#toggle-secret',clear:'#clear-secret',endpoint:'password',hint:'例如 SSH 或 su 密码'},
   connections:{input:'#edit-ssh-password',toggle:'#toggle-ssh-password',clear:'#clear-ssh-password',endpoint:'connection-password',hint:'使用 SSH 密钥时可留空'},
@@ -40,6 +42,27 @@ function byServer(collection,server) { return state.model[collection].filter(ite
 function currentServer() {
   const connection=selectedConnection();
   return byId('servers',connection?.server)||(connection?.kind==='nested'?connection:undefined);
+}
+
+function workspaceState() {
+  const terminal=workspace.active(), context=terminal?.packet?.context;
+  return {
+    connections:state.model.connections, connection:terminal?.connectionId, side:state.side,
+    workspace:state.view==='terminal'&&!$('#workspace').hidden,
+    terminalCount:workspace.panels.size,
+    openCount:[...workspace.panels.values()].filter(panel=>!panel.meta.closed).length,
+    tiled:workspace.tiled&&workspace.panels.size>1,
+    terminalName:terminal?.connectionName, user:context?.user, directory:context?.directory,
+    terminalStatus:terminal?(terminal.meta.closed?'已断开':!context?'正在连接':terminal.packet.ready?'就绪':'终端忙碌'):'',
+  };
+}
+
+function publishWorkspaceState() {
+  if(!workspaceListeners.size)return;
+  const snapshot=workspaceState();
+  if(lastWorkspaceState&&Object.keys(snapshot).every(key=>snapshot[key]===lastWorkspaceState[key]))return;
+  lastWorkspaceState=snapshot;
+  for(const listener of workspaceListeners)listener(snapshot);
 }
 function endpoint(server) {
   if(server.kind==='local')return `${server.host} · ${server.user}`;
@@ -87,6 +110,7 @@ function renderSidebar() {
   const user=active?.packet?.context?.user;
   message('#sidebar-target',active ? `终端 ${active.ordinal}${active.meta.closed?' · 已断开':user?' · '+user:''}` : '');
   $$('[data-side]').forEach(node=>node.setAttribute('aria-pressed',String(node.dataset.side===state.side)));
+  publishWorkspaceState();
   const root=$('#sidebar-items');
   if(state.side==='history') {
     const history=active?.packet?.history || [];
@@ -644,8 +668,9 @@ $('#delete-form').onsubmit=async event=>{
 };
 
 function showLogin(){
-  $$('dialog[open]').forEach(dialog=>dialog.close());workspace.visible=false;workspace.layout();
+  $$('dialog[open]').forEach(dialog=>dialog.close());workspace.visible=false;
   $('#workbench-navigation').hidden=true;$('#workspace').hidden=true;$('#login').hidden=false;
+  workspace.layout();
 }
 async function enter(){
   await load();await workspace.refresh(true);
@@ -658,4 +683,21 @@ $('#login-form').onsubmit=async event=>{
   try{await api('login',{username:$('#username').value,password:$('#password').value});await enter();}
   catch(error){message('#login-error',error.message);}finally{$('#password').value='';submit.disabled=false;}
 };
+window.workbenchControls=Object.freeze({
+  subscribe(listener){
+    workspaceListeners.add(listener);
+    listener(workspaceState());
+    return ()=>workspaceListeners.delete(listener);
+  },
+  connect,
+  addConnection(){openEditor('connections');},
+  toggleTiles(){workspace.toggleTiles();},
+  showSide(side){
+    if(!['commands','flows','history'].includes(side))return;
+    state.side=side;
+    renderSidebar();
+  },
+  setTerminalAppearance(colors,variables){workspace.setAppearance(colors,variables);},
+});
+window.dispatchEvent(new Event('workbench:controls-ready'));
 enter().catch(showLogin);
