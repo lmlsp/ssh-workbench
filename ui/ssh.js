@@ -50,6 +50,7 @@ function workspaceState() {
   return {
     connections:state.model.connections, connection:terminal?.connectionId, side:state.side,
     workspace:state.view==='terminal'&&!$('#workspace').hidden,
+    sidebarOpen:$('#terminal-sidebar').dataset.open==='true',
     terminalCount:workspace.panels.size,
     openCount:[...workspace.panels.values()].filter(panel=>!panel.meta.closed).length,
     splitLayout:workspace.tiled?workspace.splitLayout.preset:'single',
@@ -208,7 +209,11 @@ function setSidebarOpen(open,focus=false) {
   drawer.dataset.open=String(open);
   const toggle=$('#sidebar-toggle');
   toggle.setAttribute('aria-expanded',String(open));
-  if(focus)(open?$('#sidebar-hide'):toggle).focus();
+  publishWorkspaceState();
+  if(focus)requestAnimationFrame(()=>{
+    const target=open?$('#collapse-operations'):$('#expand-operations');
+    (target||(open?$('#sidebar-hide'):toggle)).focus();
+  });
 }
 
 async function connect(id) {
@@ -695,6 +700,7 @@ window.workbenchControls=Object.freeze({
   },
   connect,
   request:api,
+  setSidebarOpen(open){setSidebarOpen(open);},
   onTransferClose(handler){confirmTransferClose=handler;},
   addConnection(){openEditor('connections');},
   setSplitLayout(preset){workspace.setSplitLayout(preset);},

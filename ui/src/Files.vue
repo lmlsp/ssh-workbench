@@ -14,6 +14,11 @@ const scope=computed(()=>{
   return terminalId&&connection&&user?JSON.stringify([terminalId,connection,user]):null;
 });
 const folder=computed(()=>folders.get(scope.value));
+const showHidden=ref(false);
+const visibleEntries=computed(()=>{
+  const entries=folder.value?.entries||[];
+  return showHidden.value?entries:entries.filter(entry=>!entry.name.startsWith('.'));
+});
 const pathInput=ref('');
 const breadcrumbNav=ref(null);
 const fileInput=ref(null);
@@ -260,6 +265,7 @@ onBeforeUnmount(()=>{
                 @click="browse(folder.home)"/>
         <Button label="刷新" size="small" severity="secondary" text :disabled="!canBrowse"
                 @click="browse(folder?.directory||state.directory)"/>
+        <label class="file-hidden-toggle"><input v-model="showHidden" type="checkbox">显示隐藏文件</label>
       </div>
       <div class="file-actions">
         <Button label="上传文件" size="small" :disabled="!canTransfer" @click="openPicker"/>
@@ -269,8 +275,8 @@ onBeforeUnmount(()=>{
       <p v-if="apiError||folder?.error" class="file-error" role="alert">{{ apiError||folder.error }}</p>
       <p v-else-if="folder?.loading" class="file-notice" role="status">正在读取目录…</p>
       <p v-else-if="!state.filesReady" class="file-notice" role="status">终端空闲并返回命令提示符后，可以操作文件。</p>
-      <ul v-if="folder?.entries.length" class="file-list" aria-label="目录内容">
-        <li v-for="entry in folder.entries" :key="entry.name">
+      <ul v-if="visibleEntries.length" class="file-list" aria-label="目录内容">
+        <li v-for="entry in visibleEntries" :key="entry.name">
           <button v-if="entry.kind==='directory'" class="file-item folder-item" :disabled="!canBrowse" :title="entry.name"
                   @click="browse(pathFor(folder.directory,entry.name))">
             <span class="folder-mark" aria-hidden="true"></span><span class="file-name">{{ entry.name }}</span><span aria-hidden="true">›</span>
@@ -284,7 +290,7 @@ onBeforeUnmount(()=>{
           </div>
         </li>
       </ul>
-      <p v-else-if="folder?.directory&&!folder.loading" class="aura-empty">这个目录是空的。</p>
+      <p v-else-if="folder?.directory&&!folder.loading" class="aura-empty">{{ folder.entries.length?'此目录仅含隐藏项目。':'这个目录是空的。' }}</p>
     </template>
   </section>
 
