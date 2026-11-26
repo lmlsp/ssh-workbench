@@ -92,14 +92,15 @@
 .aura-empty { margin:9px 6px; font-size:12px; }
 .aura-terminal-tabs { flex:1; min-width:0; }
 .aura-terminal-tabs .terminal-tabs { padding:0 2px; }
-.aura-terminal-body { min-height:0; flex:1; overflow:auto; padding:6px; container-type:inline-size; }
-.aura-terminal-body .terminal-panes { --terminal-min-width:280px; }
-@container (max-width:571px) {
-  .aura-terminal-body .terminal-panes.tiled .terminal-card { width:clamp(min(280px,100%),var(--terminal-width,100%),100%); }
-}
+.aura-terminal-body { min-height:0; flex:1; overflow:auto; padding:6px; scrollbar-width:thin; }
+.aura-terminal-body > .terminal-stack { height:100%; }
+.aura-terminal-body .terminal-panes { min-height:var(--layout-min-height,0px); }
 .aura-terminal-body #no-terminal-windows { border-color:var(--line); }
-.has-aura .aura-terminal-body .xterm-host { height:var(--terminal-height,clamp(310px,calc(100dvh - var(--masthead-height) - 177px),880px)); }
-.has-aura .aura-terminal-body .tiled .xterm-host { height:var(--terminal-height,clamp(250px,40vh,450px)); }
+.split-control-icon { width:14px; height:11px; border:1px solid currentColor; border-radius:2px; position:relative; }
+.split-control-icon::before { content:''; position:absolute; inset:0 50% 0 auto; border-left:1px solid currentColor; }
+.split-layout-menu .p-popover-content { display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:8px; }
+.split-layout-menu .p-button[aria-pressed=true] { background:var(--primary-soft); }
+.split-layout-menu small { grid-column:1 / -1; padding:3px 5px; color:var(--muted); font-size:11px; }
 .has-aura .terminal-card { border-color:var(--terminal-line,#35465d); }
 .has-aura .terminal-card.focused { border-color:var(--primary); }
 .has-aura .terminal-heading { color:var(--terminal-ink,#f1f5fc); border-color:var(--terminal-line,#33445a); }
@@ -159,7 +160,7 @@
   .aura-operation-body { display:contents; }
   .has-aura .aura-operation-body .terminal-sidebar { position:fixed; height:auto; max-height:62dvh; border-radius:11px; }
   .has-aura .aura-operation-body .terminal-sidebar[data-open=true] { display:flex; }
-  .has-aura .aura-terminal-body .xterm-host { height:var(--terminal-height,clamp(250px,55dvh,520px)); }
+  .aura-terminal-body .terminal-panes { min-height:max(var(--layout-min-height,0px),min(390px,58dvh)); }
 }
 @media(max-width:600px) {
   .masthead-tools { grid-column:2; grid-row:1; }

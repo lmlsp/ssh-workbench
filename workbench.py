@@ -48,6 +48,7 @@ TERMINAL_REVISION = 0
 ASSETS = {
     '/': ('ssh.html', 'text/html; charset=utf-8'),
     '/ssh.js': ('ssh.js', 'text/javascript; charset=utf-8'),
+    '/terminal-layout.js': ('terminal-layout.js', 'text/javascript; charset=utf-8'),
     '/terminal-ui.js': ('terminal-ui.js', 'text/javascript; charset=utf-8'),
     '/style.css': ('style.css', 'text/css; charset=utf-8'),
     '/ssh.css': ('ssh.css', 'text/css; charset=utf-8'),

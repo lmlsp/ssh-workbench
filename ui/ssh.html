@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/vendor/workspace.css">
   <script src="/vendor/xterm.js" defer></script>
   <script src="/vendor/fit.js" defer></script>
+  <script src="/terminal-layout.js" defer></script>
   <script src="/terminal-ui.js" defer></script>
   <script src="/ssh.js" defer></script>
   <script type="module" src="/vendor/workspace.js"></script>
@@ -40,10 +41,10 @@
     <p class="error" id="notice" role="alert" hidden></p>
 
     <section id="view-terminal" class="view">
-      <div class="page-heading"><div><h1>终端工作区</h1><p>拖动窗口右下角调节大小。</p></div></div>
+      <div class="page-heading"><div><h1>终端工作区</h1><p>将终端标签拖到另一个终端的边缘，可调整分屏位置。</p></div></div>
       <div class="terminal-toolbar">
         <form id="attach-form" class="connect-line"><label for="terminal-connection">SSH 连接</label><select id="terminal-connection"></select><button class="primary" type="submit">添加窗口</button></form>
-        <div class="actions"><button type="button" id="open-local-terminal" hidden>本机终端</button><button type="button" id="toggle-split" aria-pressed="false" disabled>平铺窗口</button></div>
+        <div class="actions"><button type="button" id="open-local-terminal" hidden>本机终端</button><button type="button" id="toggle-split" aria-pressed="false" disabled>分屏</button></div>
       </div>
       <p id="terminal-empty" hidden>先在「服务器」添加一个 SSH 连接。</p>
       <div id="aura-workspace"></div>
@@ -147,14 +148,13 @@
   <template id="terminal-template"><article class="terminal-card">
     <div class="terminal-heading">
       <div class="terminal-identity"><div class="terminal-label"><span class="terminal-index" aria-hidden="true"></span><strong class="term-name"></strong></div><p class="term-context">正在连接…</p></div>
-      <div class="actions"><span class="selected-pane" hidden>当前</span><button type="button" class="focus-pane">选中</button><button type="button" class="close-pane" aria-label="关闭窗口" title="关闭窗口">×</button></div>
+      <div class="actions"><span class="selected-pane" hidden>当前</span><button type="button" class="focus-pane">选中</button><button type="button" class="maximize-pane" aria-label="最大化当前终端" title="最大化当前终端">□</button><button type="button" class="close-pane" aria-label="关闭窗口" title="关闭窗口">×</button></div>
     </div>
     <div class="run-info" hidden><p class="run-message" role="status"></p><p class="run-clock" hidden></p><ol class="run-steps"></ol>
       <div class="actions run-controls"><button data-action="pause">暂停</button><button data-action="retry">重试本步</button><button data-action="next">本步已手动完成</button><button data-action="leave">退出自动化</button></div>
     </div>
     <p class="terminal-input-notice" role="status" hidden></p>
     <p class="error terminal-error" hidden></p><div class="xterm-host"><div class="xterm-mount" aria-label="SSH 终端"></div></div>
-    <button type="button" class="resize-pane" aria-label="调整窗口宽高" title="拖动或用方向键调整，双击恢复默认"></button>
   </article></template>
 </body>
 </html>

@@ -19,7 +19,17 @@ const props=defineProps({
   operations:{type:HTMLElement,required:true},
 });
 const state=shallowRef(null);
-const settings=ref(null);
+const settings=ref(null), splitMenu=ref(null);
+const splitLayouts=[
+  {value:'auto',label:'自动平铺'},
+  {value:'columns',label:'左右分屏'},
+  {value:'rows',label:'上下分屏'},
+  {value:'single',label:'单窗口'},
+];
+function pickSplit(value) {
+  splitMenu.value.hide();
+  props.controls.setSplitLayout(value);
+}
 const leftView=ref('servers');
 const connectionsOpen=ref(!matchMedia('(max-width:820px)').matches);
 const operationsOpen=ref(true);
@@ -105,8 +115,16 @@ onBeforeUnmount(()=>unsubscribe?.());
     <SplitterPanel :size="55" :minSize="32" class="aura-terminals">
       <div class="aura-terminal-toolbar">
         <div ref="tabsDock" class="aura-terminal-tabs"></div>
-        <Button :label="state?.tiled?'单窗口':'平铺窗口'" size="small" severity="secondary" text
-                :disabled="!state||state.terminalCount<2" :aria-pressed="Boolean(state?.tiled)" @click="controls.toggleTiles()" />
+        <Button label="分屏" size="small" severity="secondary" text aria-haspopup="dialog"
+                :disabled="!state||state.terminalCount<2" @click="splitMenu.toggle($event)">
+          <span class="split-control-icon" aria-hidden="true"></span><span>分屏</span>
+        </Button>
+        <Popover ref="splitMenu" class="split-layout-menu" aria-label="终端分屏布局">
+          <Button v-for="layout in splitLayouts" :key="layout.value" :label="layout.label" size="small"
+                  :severity="state?.splitLayout===layout.value?'primary':'secondary'" text
+                  :aria-pressed="state?.splitLayout===layout.value" @click="pickSplit(layout.value)" />
+          <small>拖动终端标签到另一窗格的边缘。</small>
+        </Popover>
       </div>
       <div class="aura-terminal-body" ref="terminalDock"></div>
     </SplitterPanel>

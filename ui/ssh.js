@@ -52,7 +52,7 @@ function workspaceState() {
     workspace:state.view==='terminal'&&!$('#workspace').hidden,
     terminalCount:workspace.panels.size,
     openCount:[...workspace.panels.values()].filter(panel=>!panel.meta.closed).length,
-    tiled:workspace.tiled&&workspace.panels.size>1,
+    splitLayout:workspace.tiled?workspace.splitLayout.preset:'single',
     terminalName:terminal?.connectionName, user:context?.user, directory:context?.directory,
     terminalId:terminal?.meta.id, fileTransfer:terminal?.packet?.fileTransfer,
     filesReady:Boolean(terminal?.packet?.ready&&!terminal.meta.closed
@@ -697,7 +697,7 @@ window.workbenchControls=Object.freeze({
   request:api,
   onTransferClose(handler){confirmTransferClose=handler;},
   addConnection(){openEditor('connections');},
-  toggleTiles(){workspace.toggleTiles();},
+  setSplitLayout(preset){workspace.setSplitLayout(preset);},
   showSide(side){
     if(!['commands','flows','history'].includes(side))return;
     state.side=side;
