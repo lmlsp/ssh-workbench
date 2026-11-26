@@ -256,7 +256,7 @@ onBeforeUnmount(()=>{
       <div class="file-navigation">
         <Button label="上一级" size="small" severity="secondary" text :disabled="!canBrowse||breadcrumbs.length<2"
                 @click="browse(breadcrumbs.at(-2).path)"/>
-        <Button label="家目录" size="small" severity="secondary" text :disabled="!canBrowse||!folder?.home"
+        <Button label="home目录" size="small" severity="secondary" text :disabled="!canBrowse||!folder?.home"
                 @click="browse(folder.home)"/>
         <Button label="刷新" size="small" severity="secondary" text :disabled="!canBrowse"
                 @click="browse(folder?.directory||state.directory)"/>
