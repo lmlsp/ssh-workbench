@@ -23,8 +23,11 @@ import time
 from settings import DATA, ROOT, LOCAL_TERMINAL_ENABLED
 from catalog import USER, normalize_host, valid_host
 from ssh_login import PasswordTicket
+from file_transfer import FileTransfer, TRANSFER_MODES
 
 BOOT = base64.b64encode((ROOT / 'shell-integration.sh').read_bytes()).decode()
+FILE_BOOT = base64.b64encode((ROOT / 'remote-files.py').read_bytes()).decode()
+FILE_DISPATCH = b'\x18\x06'
 ESC = b'\x1b]777;OW:'
 DISPATCH = b'\x18\x07'
 CANCEL_DISPATCH = b'\x18\x0b'
@@ -89,6 +92,7 @@ class Terminal:
         self.closed = False
         self.busy_since = time.monotonic()
         self.run = None
+        self.file_transfer = None
         self.wait_timer = None
         self.pending = b''
         self.prompt = b''
@@ -98,7 +102,7 @@ class Terminal:
         self.login_ticket = None
         self.fd, slave = os.openpty()
         shell = 'exec /bin/bash --rcfile <(printf %s "$OW_BOOT" | base64 -d) -i'
-        launcher = f'OW_ROUTE= OW_HOP_HOST= OW_BOOT={BOOT} OW_NONCE={self.nonce} exec /bin/bash -c {shlex.quote(shell)}'
+        launcher = f'OW_ROUTE= OW_HOP_HOST= OW_BOOT={BOOT} OW_FILE_BOOT={FILE_BOOT} OW_NONCE={self.nonce} exec /bin/bash -c {shlex.quote(shell)}'
         try:
             self.resize(120, 32)
             cwd = None
@@ -208,6 +212,31 @@ class Terminal:
             self.waiting_for_input = label
         self.changed()
 
+    def start_files(self, context, request):
+        with self.condition:
+            if self.closed or not self.ready or not self.context or self.file_transfer:
+                raise ValueError('请先让当前终端回到命令提示符')
+            if self.run and self.run['phase'] in ACTIVE:
+                raise ValueError('请先结束自动化流程，或选用另一个终端')
+            if (context.get('connection') != self.endpoint['id']
+                    or context.get('user') != self.context['user']):
+                raise ValueError('终端的服务器或用户已切换，请刷新后重试')
+            job = FileTransfer(self, request)
+            self.write(FILE_DISPATCH)
+            self.file_transfer = job
+            self.ready = False
+            self.changed()
+            return job
+
+    def release_files(self, error=None):
+        job = getattr(self, 'file_transfer', None)
+        if job:
+            if error:
+                job.terminal_returned(error)
+            else:
+                job.terminal_returned()
+            self.file_transfer = None
+
     def read(self):
         try:
             while True:
@@ -224,6 +253,7 @@ class Terminal:
             with self.condition:
                 self.closed = True
                 self.ready = False
+                self.release_files('终端已断开')
                 self.cancel_wait()
                 if self.run and self.run['phase'] in ACTIVE:
                     if self.run['index'] < len(self.run['steps']):
@@ -266,8 +296,14 @@ class Terminal:
             if end == -1:
                 return
             try:
-                marker = base64.b64decode(data[start + len(self.signature):end], validate=True).decode().split('\0')[:-1]
-                self.marker(marker)
+                raw = base64.b64decode(data[start + len(self.signature):end], validate=True)
+                if raw.startswith(b'F\0'):
+                    kind, separator, payload = raw[2:].partition(b'\0')
+                    job = getattr(self, 'file_transfer', None)
+                    if job and separator:
+                        job.frame(kind.decode('ascii'), payload)
+                else:
+                    self.marker(raw.decode().split('\0')[:-1])
             except (ValueError, IndexError):
                 pass
             data = data[end + 1:]
@@ -308,7 +344,11 @@ class Terminal:
             self.remember(endpoint, user, directory, 0, script, target)
             if current_run and current_run['phase'] == 'switching' and current_run['switchingTo'] == target:
                 current_run['switchAcknowledged'] = True
+        elif event == 'J' and len(values) == 1 and endpoint['id'] == self.endpoint['id']:
+            self.release_files(values[0])
+            self.changed()
         elif event == 'P' and len(values) == 2:
+            self.release_files()
             if self.login_ticket:
                 self.login_ticket.close()
                 self.login_ticket = None
@@ -574,6 +614,8 @@ class Terminal:
 
     def input(self, text):
         with self.condition:
+            if getattr(self, 'file_transfer', None):
+                raise ValueError('文件操作占用当前终端，可在传输面板取消')
             phase = self.run['phase'] if self.run else None
             if phase == 'stopping':
                 raise ValueError('流程正在切换状态，请稍等片刻')
@@ -691,10 +733,12 @@ class Terminal:
                     run['completionAgeMs'] = int((time.monotonic() - source['finishedAt']) * 1000)
                 run['steps'] = [{key: step[key] for key in ('name', 'status')} for step in source['steps']]
             history = [entry for entry in self.history if entry['connection'] == self.endpoint['id']]
+            transfer = self.file_transfer
             return {'id': self.id, 'connection': self.connection['id'], 'endpoint': self.endpoint, 'revision': self.revision,
                     'reset': after < self.floor, 'text': base64.b64encode(content).decode(), 'ready': self.ready,
                     'closed': self.closed, 'context': self.context, 'history': history, 'run': run,
-                    'inputNotice': '' if self.closed else self.waiting_for_input}
+                    'inputNotice': '' if self.closed else self.waiting_for_input,
+                    'fileTransfer': transfer.id if transfer and transfer.mode in TRANSFER_MODES else None}
 
     def close(self):
         with self.condition:

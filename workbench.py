@@ -14,9 +14,10 @@ import sqlite3
 import ssl
 import threading
 import time
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from catalog import Store, match, server_id
+from file_transfer import FileConflict, TRANSFER_MODES, checked_request
 from auth import AUTH, set_password, verify
 from multi_logs import follow
 from settings import DATA, PORT, ROOT, setup_data
@@ -38,6 +39,9 @@ RUN_LOG = RunLog(DATA / 'run-log.sqlite3')
 SESSIONS = {}
 TERM_LOCK = threading.RLock()
 TERMS = {}
+FILE_JOBS = {}
+FILE_LOCK = threading.Lock()
+FILE_ROUTE = re.compile(r'/api/files/([A-Za-z0-9_-]{22})/(upload|download|status|cancel)')
 MAX_TERMINALS = 12
 TERMINAL_EVENTS = threading.Condition()
 TERMINAL_REVISION = 0
@@ -53,6 +57,23 @@ ASSETS = {
     '/vendor/workspace.js': ('dist/workspace.js', 'text/javascript; charset=utf-8'),
     '/vendor/workspace.css': ('dist/workspace.css', 'text/css; charset=utf-8'),
 }
+
+
+def file_request(data):
+    request = checked_request(data)
+    with TERM_LOCK:
+        term = TERMS.get(data.get('terminal'))
+    if not term:
+        raise ValueError('终端已不存在')
+    with term.condition:
+        job = term.start_files(data, request)
+        if job.mode in TRANSFER_MODES:
+            with FILE_LOCK:
+                completed = [key for key, item in FILE_JOBS.items() if item.released.is_set()]
+                for key in completed[:-32]:
+                    del FILE_JOBS[key]
+                FILE_JOBS[job.id] = job
+    return job.prepare()
 
 
 def terminal_changed():
@@ -238,6 +259,32 @@ class Handler(BaseHTTPRequestHandler):
         except (KeyError, cookies.CookieError):
             return False
 
+    def transfer_stream(self, job, operation):
+        self.connection.settimeout(55)
+        if operation == 'upload':
+            length = int(self.headers.get('Content-Length', '-1'))
+            if self.headers.get('Transfer-Encoding') or length != job.size:
+                raise ValueError('上传文件的长度不正确')
+            job.upload(self.rfile, length)
+            self.respond(200, job.public())
+            return
+        job.claim('download')
+        if job.size == 0:
+            job.download(self.wfile)
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Length', str(job.size))
+            self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + quote(job.name, safe=''))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.end_headers()
+            if job.size:
+                job.download(self.wfile)
+        except (OSError, ValueError):
+            job.cancel()
+            self.close_connection = True
+
     def route(self, post=False, head=False):
         parsed = urlsplit(self.path)
         path = parsed.path
@@ -248,6 +295,26 @@ class Handler(BaseHTTPRequestHandler):
             if not post and path in ASSETS:
                 file, mime = ASSETS[path]
                 self.respond(200, (ROOT / 'ui' / file).read_bytes(), mime, head=head)
+                return
+            file_route = FILE_ROUTE.fullmatch(path)
+            if file_route:
+                if not self.authorized():
+                    self.respond(401, {'error': '请先登录'}, head=head)
+                    return
+                identifier, operation = file_route.groups()
+                with FILE_LOCK:
+                    job = FILE_JOBS.get(identifier)
+                if not job:
+                    self.respond(404, {'error': '找不到这项文件传输'}, head=head)
+                elif operation == 'status' and not post:
+                    self.respond(200, job.public(), head=head)
+                elif operation == 'cancel' and post:
+                    job.cancel()
+                    self.respond(200, job.public())
+                elif not head and (post and operation == 'upload' or not post and operation == 'download'):
+                    self.transfer_stream(job, operation)
+                else:
+                    self.respond(405, {'error': '无效的文件传输请求'}, head=head)
                 return
             data = {}
             if post:
@@ -285,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, terminal_list())
             elif post and path == '/api/terminal':
                 self.respond(201, open_terminal(data))
+            elif post and path == '/api/files':
+                self.respond(200, file_request(data))
             elif post and path == '/api/run':
                 self.respond(200, execute_on_terminal(data))
             elif post and path == '/api/terminal-events':
@@ -324,6 +393,8 @@ class Handler(BaseHTTPRequestHandler):
                         term.resize(cols, rows)
                 elif operation == 'close':
                     with term.condition:
+                        if not term.closed and term.file_transfer:
+                            raise ValueError('当前终端仍有文件操作，请先取消或等待结束')
                         if not term.closed and term.run and term.run['phase'] in ACTIVE:
                             raise ValueError('请先退出自动化，再断开 SSH 终端')
                         term.close()
@@ -335,6 +406,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, {'ok': True})
             else:
                 self.respond(404, {'error': '找不到页面'}, head=head)
+        except FileConflict as exc:
+            self.respond(409, {'error': str(exc)}, head=head)
         except (ValueError, AttributeError, TypeError) as exc:
             self.respond(400, {'error': str(exc)}, head=head)
         except (OSError, sqlite3.Error):

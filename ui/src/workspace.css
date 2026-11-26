@@ -169,3 +169,67 @@
   .has-aura .navigation button { padding-inline:7px; font-size:12px; }
   .has-aura .workspace { padding-inline:6px; }
 }
+
+.aura-file-tabs .p-tablist-tab-list { gap:2px; background:transparent; border:0; }
+.aura-file-tabs .p-tab { padding:6px 7px; font-size:12px; white-space:nowrap; }
+.aura-files { display:flex; flex:1; flex-direction:column; gap:7px; min-height:0; padding:8px; font-size:12px; }
+.file-target { padding:8px; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:9px; }
+.file-target strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.file-target strong span { color:var(--muted); font-weight:400; }
+.terminal-directory {
+  width:100%; display:flex; gap:6px; align-items:center; min-width:0; margin-top:4px; padding:2px;
+  border:0; background:transparent; color:var(--primary); text-align:left; font-size:11px;
+}
+.terminal-directory span { flex:none; }
+.terminal-directory code,.file-name,.file-job :is(strong,code) { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.file-path,.file-actions,.file-navigation { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+.file-path { flex-wrap:nowrap; }
+.file-path input { flex:1; width:0; min-width:0; font-family:ui-monospace,monospace; font-size:11px; }
+.aura-files .p-button,.file-dock .p-button { padding:3px 6px; font-size:11px; white-space:nowrap; }
+.file-actions { padding-bottom:6px; border-bottom:1px solid var(--line); }
+.file-breadcrumbs { display:flex; gap:3px; align-items:center; min-height:22px; overflow:auto; color:var(--muted); scrollbar-width:thin; }
+.file-breadcrumbs button {
+  border:0; padding:2px 3px; border-radius:4px; background:transparent; color:var(--muted);
+  white-space:nowrap; font:inherit; font-family:ui-monospace,monospace;
+}
+.file-breadcrumbs button[aria-current] { background:var(--primary-soft); color:var(--primary); }
+.aura-files button:not(:disabled):hover:is(.folder-item,.terminal-directory) { background:var(--primary-soft); }
+.file-list { margin:0; padding:0; min-height:0; overflow:auto; list-style:none; }
+.file-item {
+  display:flex; width:100%; align-items:center; gap:7px; min-height:29px; padding:3px 5px;
+  color:var(--ink); text-align:left; font:inherit; background:transparent; border:0; border-radius:5px;
+}
+.file-list li+li { border-top:1px solid var(--line); }
+.file-item .file-name { flex:1; }
+.file-size,.file-notice { color:var(--muted); font-size:11px; }
+.file-notice,.file-error { margin:2px 0; }
+.file-error { color:var(--error); overflow-wrap:anywhere; }
+.folder-mark,.file-mark { width:12px; height:10px; flex:none; border:1px solid currentColor; border-radius:2px; color:var(--muted); }
+.folder-mark { position:relative; color:var(--primary); border-radius:2px 2px 3px 3px; }
+.folder-mark::before { content:''; position:absolute; left:-1px; top:-3px; width:6px; height:2px; border:1px solid; border-radius:2px 2px 0 0; }
+.file-mark { width:9px; height:12px; margin-inline:1px 2px; }
+
+.file-dock { margin-top:6px; border:1px solid var(--line); border-radius:8px; background:var(--paper); }
+.file-dock .file-dock-toggle { gap:7px; margin:2px 5px; }
+.transfer-count { padding:1px 5px; border-radius:5px; background:var(--primary-soft); color:var(--primary); }
+.file-jobs { max-height:clamp(82px,18dvh,180px); overflow:auto; border-top:1px solid var(--line); }
+.file-job {
+  display:grid; grid-template-columns:minmax(0,1fr) minmax(75px,25%) auto; align-items:center;
+  gap:10px; padding:6px 10px; border-bottom:1px solid var(--line); font-size:12px;
+}
+.file-job:last-child { border-bottom:0; }
+.file-job :is(strong,code,small) { display:block; }
+.file-job code,.file-job small { color:var(--muted); font-size:11px; }
+.file-job .file-error { color:var(--error); }
+.file-job .p-progressbar { margin-bottom:3px; height:4px; }
+.file-dialog-field { display:grid; gap:5px; }
+.file-dialog-path { overflow-wrap:anywhere; color:var(--muted); }
+.file-dialog-path code { color:var(--ink); }
+@media(min-width:821px) {
+  #aura-workspace {
+    display:flex; flex-direction:column;
+    height:clamp(520px,calc(100dvh - var(--masthead-height) - 22px),1130px);
+  }
+  .aura-splitter.p-splitter { flex:1; height:auto; min-height:0; }
+}
+@media(max-width:820px) { .aura-files .file-list { max-height:220px; } }

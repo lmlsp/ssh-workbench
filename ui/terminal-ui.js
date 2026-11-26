@@ -343,6 +343,18 @@ class TerminalWorkspace {
     const panel=this.panels.get(id);
     if (!panel) return;
     try {
+      const job=panel.packet?.fileTransfer;
+      if(job) {
+        const confirmed=confirmTransferClose
+          ? await confirmTransferClose(panel.connectionName)
+          : window.confirm('中断文件传输并关闭终端？');
+        if(!confirmed)return;
+        await api(`files/${job}/cancel`,{});
+        for(let attempt=0;attempt<30;attempt++) {
+          if((await api(`files/${job}/status`)).released)break;
+          await new Promise(resolve=>setTimeout(resolve,150));
+        }
+      }
       await api(`${panel.path}/close`,{});
       this.dismissed.add(id); panel.dispose(); this.panels.delete(id);
       await this.refresh();

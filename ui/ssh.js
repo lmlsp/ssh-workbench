@@ -7,6 +7,7 @@ const activePhases = ['connecting','switching','dispatch','running','between','w
 const workspace = new TerminalWorkspace();
 const workspaceListeners = new Set();
 let lastWorkspaceState;
+let confirmTransferClose;
 const passwordControls={
   commands:{input:'#edit-secret',toggle:'#toggle-secret',clear:'#clear-secret',endpoint:'password',hint:'例如 SSH 或 su 密码'},
   connections:{input:'#edit-ssh-password',toggle:'#toggle-ssh-password',clear:'#clear-ssh-password',endpoint:'connection-password',hint:'使用 SSH 密钥时可留空'},
@@ -53,6 +54,9 @@ function workspaceState() {
     openCount:[...workspace.panels.values()].filter(panel=>!panel.meta.closed).length,
     tiled:workspace.tiled&&workspace.panels.size>1,
     terminalName:terminal?.connectionName, user:context?.user, directory:context?.directory,
+    terminalId:terminal?.meta.id, fileTransfer:terminal?.packet?.fileTransfer,
+    filesReady:Boolean(terminal?.packet?.ready&&!terminal.meta.closed
+      &&!activePhases.includes(terminal.packet.run?.phase)&&!terminal.packet.fileTransfer),
     terminalStatus:terminal?(terminal.meta.closed?'已断开':!context?'正在连接':terminal.packet.ready?'就绪':'终端忙碌'):'',
   };
 }
@@ -690,6 +694,8 @@ window.workbenchControls=Object.freeze({
     return ()=>workspaceListeners.delete(listener);
   },
   connect,
+  request:api,
+  onTransferClose(handler){confirmTransferClose=handler;},
   addConnection(){openEditor('connections');},
   toggleTiles(){workspace.toggleTiles();},
   showSide(side){

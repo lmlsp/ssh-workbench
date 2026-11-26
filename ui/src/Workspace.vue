@@ -9,6 +9,7 @@ import TabList from 'primevue/tablist';
 import Tab from 'primevue/tab';
 import Select from 'primevue/select';
 import Popover from 'primevue/popover';
+import Files from './Files.vue';
 import { appearance, customReadable, resetAppearance, terminalColors, terminalDecoration, terminals, workspaces } from './appearance.js';
 
 const props=defineProps({
@@ -19,6 +20,7 @@ const props=defineProps({
 });
 const state=shallowRef(null);
 const settings=ref(null);
+const leftView=ref('servers');
 const connectionsOpen=ref(!matchMedia('(max-width:820px)').matches);
 const operationsOpen=ref(true);
 const terminalDock=ref(null), tabsDock=ref(null), operationsDock=ref(null);
@@ -44,7 +46,7 @@ onBeforeUnmount(()=>unsubscribe?.());
 <template>
   <Teleport to="#aura-tools">
     <div class="aura-tools">
-      <Button v-if="state?.workspace" label="连接区" size="small" severity="secondary"
+      <Button v-if="state?.workspace" label="左侧面板" size="small" severity="secondary"
               :outlined="!connectionsOpen" aria-controls="aura-connections" :aria-pressed="connectionsOpen"
               @click="connectionsOpen=!connectionsOpen" />
       <Button v-if="state?.workspace" class="aura-desktop-actions" label="快捷操作" size="small" severity="secondary"
@@ -79,10 +81,12 @@ onBeforeUnmount(()=>unsubscribe?.());
   <Splitter class="aura-splitter" :class="{'hide-connections':!connectionsOpen,'hide-operations':!operationsOpen}" :gutterSize="7">
     <SplitterPanel :size="22" :minSize="17" class="aura-connections">
       <div id="aura-connections" class="aura-pane-title">
-        <h2>服务器</h2>
-        <Button label="添加连接" size="small" severity="secondary" outlined @click="controls.addConnection()" />
+        <Tabs v-model:value="leftView" class="aura-file-tabs" aria-label="连接区">
+          <TabList><Tab value="servers">服务器</Tab><Tab value="files">文件</Tab></TabList>
+        </Tabs>
+        <Button v-if="leftView==='servers'" label="添加连接" size="small" severity="secondary" outlined @click="controls.addConnection()" />
       </div>
-      <div class="aura-connection-list" aria-label="已保存的服务器连接">
+      <div v-if="leftView==='servers'" class="aura-connection-list" aria-label="已保存的服务器连接">
         <div v-for="connection in connections" :key="connection.id" class="aura-connection"
              :class="{selected:state?.connection===connection.id}">
           <div>
@@ -96,6 +100,7 @@ onBeforeUnmount(()=>unsubscribe?.());
         </div>
         <p v-if="!connections.length" class="aura-empty">添加 SSH 连接后，可以在这里打开终端。</p>
       </div>
+      <Files :state="state" :controls="controls" :visible="leftView==='files'&&connectionsOpen" />
     </SplitterPanel>
     <SplitterPanel :size="55" :minSize="32" class="aura-terminals">
       <div class="aura-terminal-toolbar">
@@ -119,6 +124,7 @@ onBeforeUnmount(()=>unsubscribe?.());
       </TabList>
     </Tabs>
   </Teleport>
+  <div id="aura-transfers"></div>
   <footer class="aura-status" aria-label="当前终端状态">
     <Tag severity="secondary" :value="(state?.openCount||0)+' 个终端'" />
     <span v-if="state?.terminalName">{{ state.terminalName }}</span>

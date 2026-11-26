@@ -1,7 +1,7 @@
 # Loaded by Bash inside the SSH terminal. No files are installed in the login home.
 if [[ -r ~/.bashrc ]]; then source ~/.bashrc; fi
 set +H
-shopt -s cmdhist lithist
+shopt -s cmdhist lithist interactive_comments
 HISTFILE=/dev/null
 HISTCONTROL=
 HISTIGNORE=
@@ -174,7 +174,7 @@ ssh() {
     if [[ -n $identity && -n $resolved_host && -n $port ]]; then
         __ow_emit N "$host" "$port" "$account" "$identity" "$resolved_host"
     fi
-    launcher="OW_ROUTE='${OW_ROUTE:-}' OW_HOP_HOST='$host' OW_HOP_PORT='$port' OW_BOOT=$OW_BOOT OW_NONCE=$OW_NONCE exec /bin/bash -c 'exec /bin/bash --rcfile <(printf %s \"\$OW_BOOT\" | base64 -d) -i'"
+    launcher="OW_ROUTE='${OW_ROUTE:-}' OW_HOP_HOST='$host' OW_HOP_PORT='$port' OW_BOOT=$OW_BOOT OW_FILE_BOOT=$OW_FILE_BOOT OW_NONCE=$OW_NONCE exec /bin/bash -c 'exec /bin/bash --rcfile <(printf %s \"\$OW_BOOT\" | base64 -d) -i'"
     command ssh -tt "${original[@]}" "$launcher"
 }
 
@@ -187,7 +187,7 @@ su() {
             __ow_history=$__ow_latest_number
         fi
         if [[ -t 0 && -t 1 && $BASH_SUBSHELL == 0 ]]; then __ow_emit U "$2"; fi
-        command su - "$2" --session-command "OW_ROUTE='${OW_ROUTE:-}' OW_PARENT=$parent OW_BOOT=$OW_BOOT OW_NONCE=$OW_NONCE exec /bin/bash -c 'exec /bin/bash --rcfile <(printf %s \"\$OW_BOOT\" | base64 -d) -i'"
+        command su - "$2" --session-command "OW_ROUTE='${OW_ROUTE:-}' OW_PARENT=$parent OW_BOOT=$OW_BOOT OW_FILE_BOOT=$OW_FILE_BOOT OW_NONCE=$OW_NONCE exec /bin/bash -c 'exec /bin/bash --rcfile <(printf %s \"\$OW_BOOT\" | base64 -d) -i'"
         status=$?
         if [[ $status -ne 0 && -n $parent ]]; then
             # A failed switch returns to the original shell, which can record its failure normally.
@@ -211,8 +211,23 @@ __ow_record_switch() {
     fi
 }
 
+__ow_files() {
+    if [[ -n ${READLINE_LINE:-} ]]; then
+        __ow_emit J '终端有未完成的输入，请先执行或清空后回到提示符'
+        return
+    fi
+    if [[ ! -x /usr/bin/python3 || -z ${OW_FILE_BOOT:-} ]]; then
+        __ow_emit J '目标环境需要 /usr/bin/python3 才能进行文件操作'
+    else
+        /usr/bin/python3 -c 'import base64,os;exec(base64.b64decode(os.environ["OW_FILE_BOOT"]))'
+    fi
+    __ow_emit P "$__ow_user" "$PWD"
+}
+
 __ow_record_switch
 unset OW_PARENT
+bind -m emacs-standard -x '"\C-x\C-f":__ow_files'
+bind -m vi-insert -x '"\C-x\C-f":__ow_files'
 bind -m emacs-standard -x '"\C-x\C-g":__ow_dispatch'
 bind -m vi-insert -x '"\C-x\C-g":__ow_dispatch'
 bind -m emacs-standard -x '"\C-x\C-k":__ow_cancel_dispatch'
