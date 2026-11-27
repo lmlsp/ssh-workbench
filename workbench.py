@@ -20,6 +20,7 @@ from catalog import Store, match, server_id
 from file_transfer import FileConflict, TRANSFER_MODES, checked_request
 from auth import AUTH, set_password, verify
 from multi_logs import follow
+from monitor import snapshot as monitor_snapshot
 from settings import DATA, PORT, ROOT, setup_data
 from run_log import RunLog
 from terminal import ACTIVE, Terminal
@@ -34,6 +35,8 @@ ALLOW_HTTP = os.environ.get('WORKBENCH_ALLOW_HTTP') == '1'
 COOKIE_NAME = 'ssh_workbench_lan_http' if ALLOW_HTTP and not TLS_CERT else 'ssh_workbench'
 HOST = f'{BIND_ADDRESS}:{PORT}'
 ORIGIN = ('https://' if TLS_CERT else 'http://') + HOST
+PUBLIC_ORIGIN = os.environ.get('WORKBENCH_PUBLIC_ORIGIN', '').rstrip('/')
+ALLOWED_ORIGINS = {ORIGIN, PUBLIC_ORIGIN} - {''}
 STORE = Store()
 RUN_LOG = RunLog(DATA / 'run-log.sqlite3')
 SESSIONS = {}
@@ -42,6 +45,21 @@ TERMS = {}
 FILE_JOBS = {}
 FILE_LOCK = threading.Lock()
 FILE_ROUTE = re.compile(r'/api/files/([A-Za-z0-9_-]{22})/(upload|download|status|cancel)')
+
+
+def trusted_host(value):
+    if value == HOST:
+        return True
+    if not PUBLIC_ORIGIN:
+        return False
+    try:
+        expected = urlsplit(PUBLIC_ORIGIN)
+        supplied = urlsplit('//' + (value or ''))
+        port = supplied.port
+        expected_port = 443 if expected.scheme == 'https' else 80
+        return bool(expected.hostname and supplied.hostname == expected.hostname and port in (None, expected_port))
+    except ValueError:
+        return False
 MAX_TERMINALS = 12
 TERMINAL_EVENTS = threading.Condition()
 TERMINAL_REVISION = 0
@@ -91,9 +109,9 @@ def record_run(entry):
         logging.exception('Could not save workbench run results')
 
 
-def recent_runs(before):
+def recent_runs(before, limit=30, server=None, query=None, status=None, since=None):
     with TERM_LOCK:
-        result = RUN_LOG.page(before)
+        result = RUN_LOG.page(before, limit=limit, server=server, query=query, status=status, since=since)
         live_ids = {term.run['id'] for term in TERMS.values() if term.run}
     for entry in result['runs']:
         if entry['phase'] in ACTIVE and entry['id'] not in live_ids:
@@ -149,68 +167,7 @@ def execute_on_terminal(data):
             if not term.ready:
                 raise ValueError('选中的终端正在执行命令或等待输入，请等命令提示符出现后再执行')
             if replacement:
-                term.control('leave')
-            term.begin(name, steps, password, kind)
-            return {'id': term.id}
-
-
-def save_operation(collection, data):
-    if collection != 'commands' or 'terminal' not in data:
-        return STORE.save(collection, data)
-    with TERM_LOCK:
-        term = TERMS.get(data['terminal'])
-        if not term:
-            raise ValueError('终端已不存在')
-        with term.condition:
-            endpoint = term.endpoint
-            if term.closed or endpoint.get('kind') != 'nested' or endpoint['id'] != data.get('connection'):
-                raise ValueError('请回到保存此指令的 SSH 连接')
-            return STORE.save(collection, data, nested=endpoint)
-
-
-def terminal_events(data):
-    requested = data.get('terminals')
-    if not isinstance(requested, list) or not 1 <= len(requested) <= 2 * MAX_TERMINALS:
-        raise ValueError('请选择要显示的终端')
-    with TERM_LOCK:
-        watched, missing = [], []
-        for item in requested:
-            identifier, after = item.get('id'), item.get('after')
-            if not isinstance(identifier, str) or type(after) is not int or after < -1:
-                raise ValueError('无效的终端位置')
-            if identifier in TERMS:
-                watched.append((TERMS[identifier], after))
-            else:
-                missing.append(identifier)
-
-    def available():
-        packets = []
-        for term, after in watched:
-            with term.condition:
-                if term.revision > after:
-                    packets.append(term.events(after, False))
-        return packets
-
-    # Snapshot the global revision first, then check the individual sessions without that lock.
-    with TERMINAL_EVENTS:
-        observed = TERMINAL_REVISION
-    packets = available()
-    if not packets and not missing:
-        with TERMINAL_EVENTS:
-            TERMINAL_EVENTS.wait_for(lambda: TERMINAL_REVISION != observed, timeout=18)
-        packets = available()
-    return {'packets': packets, 'missing': missing}
-
-
-def delete_configuration(data, preview):
-    with TERM_LOCK:
-        active = set()
-        for term in TERMS.values():
-            with term.condition:
-                managed = term.run and term.run['phase'] in ACTIVE
-                manual = term.context is not None and not term.ready
-                if not term.closed:
-                    if managed:
+               �^�o+^����ם    if managed:
                         active.add(term.run['connection'])
                     if manual:
                         active.add(term.endpoint['id'])
@@ -289,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, post=False, head=False):
         parsed = urlsplit(self.path)
         path = parsed.path
-        if self.headers.get('Host') != HOST or post and self.headers.get('Origin') != ORIGIN:
+        if not trusted_host(self.headers.get('Host')) or post and self.headers.get('Origin') not in ALLOWED_ORIGINS:
             self.respond(403, {'error': '请使用工作台配置的访问地址'}, head=head)
             return
         try:
@@ -336,19 +293,32 @@ class Handler(BaseHTTPRequestHandler):
                         del SESSIONS[old]
                     SESSIONS[token] = now + 8 * 60 * 60
                 cookie = f'{COOKIE_NAME}={token}; Path=/; SameSite=Strict; HttpOnly'
-                self.respond(200, {'ok': True}, cookie=cookie + ('; Secure' if TLS_CERT else ''))
+                self.respond(200, {'ok': True}, cookie=cookie + ('; Secure' if TLS_CERT or PUBLIC_ORIGIN.startswith('https://') else ''))
                 return
             if not self.authorized():
                 self.respond(401, {'error': '请先登录'}, head=head)
                 return
             if not post and path == '/api/state':
                 self.respond(200, STORE.current())
+            elif not post and path == '/api/monitor':
+                self.respond(200, monitor_snapshot(STORE))
             elif not post and path == '/api/run-log':
                 query = parse_qs(parsed.query)
                 before = int(query['before'][0]) if 'before' in query else None
+                limit = int(query.get('limit', ['30'])[0])
+                since = int(query['since'][0]) if 'since' in query else None
+                server = query.get('server', [''])[0][:120]
+                keyword = query.get('q', [''])[0][:120]
+                status = query.get('status', [''])[0]
                 if before is not None and not 0 < before < 2**63:
                     raise ValueError('无效的执行日志位置')
-                self.respond(200, recent_runs(before))
+                if not 1 <= limit <= 200:
+                    raise ValueError('执行日志每页最多 200 条')
+                if since is not None and not 0 <= since < 2**63:
+                    raise ValueError('无效的执行日志时间范围')
+                if status not in ('', 'succeeded', 'failed', 'running', 'paused', 'cancelled', 'review'):
+                    raise ValueError('无效的执行日志状态')
+                self.respond(200, recent_runs(before, limit, server, keyword, status or None, since))
             elif not post and path == '/api/terminals':
                 self.respond(200, terminal_list())
             elif post and path == '/api/terminal':

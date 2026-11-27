@@ -10,6 +10,7 @@ import Tab from 'primevue/tab';
 import Select from 'primevue/select';
 import Popover from 'primevue/popover';
 import Files from './Files.vue';
+import Monitor from './Monitor.vue';
 import { appearance, customReadable, resetAppearance, terminalColors, terminalDecoration, terminals, workspaces } from './appearance.js';
 
 const props=defineProps({
@@ -118,7 +119,7 @@ onBeforeUnmount(()=>{
                   aria-label="收起左侧面板" title="收起左侧面板" aria-controls="aura-connections"
                   aria-expanded="true" @click="toggleConnections"><span aria-hidden="true">‹</span></Button>
           <Tabs v-model:value="leftView" class="aura-file-tabs" aria-label="连接区">
-            <TabList><Tab value="servers">服务器</Tab><Tab value="files">文件</Tab></TabList>
+            <TabList><Tab value="servers">服务器</Tab><Tab value="files">文件</Tab><Tab value="monitor">监控</Tab></TabList>
           </Tabs>
           <Button v-if="leftView==='servers'" label="添加连接" size="small" severity="secondary" outlined @click="controls.addConnection()" />
         </div>
@@ -137,6 +138,7 @@ onBeforeUnmount(()=>{
           <p v-if="!connections.length" class="aura-empty">添加 SSH 连接后，可以在这里打开终端。</p>
         </div>
         <Files :state="state" :controls="controls" :visible="leftView==='files'&&connectionsOpen" />
+        <Monitor v-if="leftView==='monitor'&&connectionsOpen" :state="state" :controls="controls" :visible="connectionsOpen" />
       </SplitterPanel>
       <SplitterPanel :size="55" :minSize="32" class="aura-terminals">
         <div class="aura-terminal-toolbar">

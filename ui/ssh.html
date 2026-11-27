@@ -82,11 +82,46 @@
       <div class="library-lists"><section><h2>流程</h2><ul class="items" id="flow-list"></ul></section><section><h2>快捷指令</h2><ul class="items" id="command-list"></ul></section></div>
     </section>
 
-    <section id="view-run-log" class="view" hidden>
-      <div class="page-heading"><h1>执行日志</h1><button id="refresh-run-log">刷新</button></div>
-      <p id="run-log-empty" hidden>执行快捷指令或流程后，结果会显示在这里。</p>
-      <ol id="run-log-list" class="run-log-list"></ol>
-      <button id="more-run-log" hidden>加载更早的记录</button>
+    <section id="view-run-log" class="view run-log-page" hidden>
+      <div class="page-heading run-log-heading">
+        <div><h1>执行日志</h1><p>按服务器查看快捷指令和自动化流程，追溯每次执行结果。</p></div>
+        <button id="refresh-run-log">刷新</button>
+      </div>
+      <div class="run-log-toolbar" role="search" aria-label="筛选执行日志">
+        <label>时间范围
+          <select id="run-log-range">
+            <option value="7d">最近 7 天</option><option value="24h">最近 24 小时</option>
+            <option value="30d">最近 30 天</option><option value="all">全部时间</option>
+          </select>
+        </label>
+        <label>服务器
+          <input id="run-log-server" type="search" placeholder="服务器名称或 IP" autocomplete="off">
+        </label>
+        <label>任务关键字
+          <input id="run-log-search" type="search" placeholder="搜索任务名称或执行人" autocomplete="off">
+        </label>
+        <label>执行状态
+          <select id="run-log-status">
+            <option value="">全部状态</option><option value="succeeded">成功</option>
+            <option value="failed">失败</option><option value="running">进行中</option>
+            <option value="paused">已暂停</option><option value="cancelled">已结束</option>
+            <option value="review">待核对</option>
+          </select>
+        </label>
+        <button id="reset-run-log" type="button" class="quiet">重置</button>
+      </div>
+      <div id="run-log-summary" class="run-log-summary" aria-live="polite"></div>
+      <div class="run-log-layout">
+        <div class="run-log-main">
+          <div class="run-log-section-heading"><h2>服务器执行记录</h2><span id="run-log-count"></span></div>
+          <div id="run-log-cards" class="run-log-cards"></div>
+          <p id="run-log-empty" class="run-log-empty" hidden>当前筛选条件下没有执行记录。</p>
+          <div class="run-log-pagination"><span id="run-log-loaded"></span><button id="more-run-log" hidden>加载更早的记录</button></div>
+        </div>
+        <aside id="run-log-detail" class="run-log-detail" aria-label="执行详情">
+          <div class="run-log-detail-empty">选择一条执行记录，查看执行步骤和状态变化。</div>
+        </aside>
+      </div>
     </section>
 
     <section id="view-servers" class="view" hidden>

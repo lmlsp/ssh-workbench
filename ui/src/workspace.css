@@ -252,3 +252,64 @@
   .aura-dock > .aura-splitter { flex:1; height:auto; min-width:0; min-height:0; }
 }
 @media(max-width:820px) { .aura-files .file-list { max-height:220px; } }
+
+/* Server monitoring lives in the existing left connection pane. The terminal,
+   operation sidebar and transfer/status docks keep their original layout. */
+.aura-monitor {
+  display:flex; flex:1; flex-direction:column; gap:7px; min-height:0; overflow:auto; padding:7px;
+  scrollbar-width:thin;
+}
+.aura-monitor-heading { display:flex; align-items:center; justify-content:space-between; gap:5px; }
+.aura-monitor-heading strong { display:block; font-size:13px; }
+.aura-monitor-heading small { display:block; margin-top:2px; color:var(--muted); font-size:10px; }
+.aura-monitor-heading .p-button { padding:3px 5px; font-size:11px; }
+.aura-monitor-summary { display:flex; align-items:center; flex-wrap:wrap; gap:5px 10px; padding:5px 7px; border:1px solid var(--line); border-radius:7px; background:var(--surface); font-size:10px; }
+.aura-monitor-summary > span { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+.aura-monitor-summary .monitor-updated { margin-left:auto; color:var(--muted); }
+.monitor-dot { width:6px; height:6px; border-radius:50%; background:#a0aab5; }
+.monitor-dot.online { background:#279c6b; }
+.monitor-dot.offline { background:#c45c61; }
+.aura-monitor-card { padding:8px; border:1px solid var(--line); border-radius:9px; background:var(--paper); box-shadow:0 1px 3px #203c5a0a; }
+.aura-monitor-card-head { display:flex; align-items:center; justify-content:space-between; gap:4px; }
+.aura-monitor-server-title { display:flex; align-items:center; flex-wrap:wrap; gap:5px; min-width:0; }
+.aura-monitor-server-title strong { font-size:12px; overflow-wrap:anywhere; }
+.aura-monitor-server-title .p-tag { padding:1px 5px; font-size:9px; }
+.aura-monitor-card-head .p-button { padding:2px 4px; font-size:10px; }
+.aura-monitor-endpoint { margin:2px 0 7px; color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
+.aura-monitor-metrics { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px; }
+.aura-monitor-metric { min-width:0; padding:6px; border:1px solid var(--line); border-radius:7px; background:var(--surface); }
+.aura-monitor-metric > div:first-child { display:flex; align-items:center; justify-content:space-between; gap:4px; }
+.aura-monitor-metric span { color:var(--muted); font-size:10px; }
+.aura-monitor-metric b { font-size:12px; font-variant-numeric:tabular-nums; }
+.aura-monitor-metric small { display:block; margin-top:3px; color:var(--muted); font-size:9px; overflow-wrap:anywhere; }
+.aura-monitor-metric .monitor-track { margin-top:5px; }
+.aura-monitor-metric.monitor-load > small { margin-top:4px; }
+.aura-monitor-metric.monitor-load > strong { display:block; margin-top:2px; font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.monitor-track { height:4px; overflow:hidden; border-radius:5px; background:var(--line); }
+.monitor-track i { display:block; height:100%; border-radius:inherit; background:#4b8dc9; }
+.monitor-track i.memory { background:#2b9c75; }
+.monitor-track i.swap { background:#b58a49; }
+.monitor-track i.warning { background:#c98b3b; }
+.aura-monitor-section { margin-top:8px; }
+.aura-monitor-section > header { display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; }
+.aura-monitor-section > header strong { font-size:10px; }
+.aura-monitor-section > header small { color:var(--muted); font-size:9px; }
+.aura-monitor-disk { margin:5px 0; }
+.aura-monitor-disk > div:first-child { display:grid; grid-template-columns:minmax(28px,.6fr) minmax(0,1fr) auto; align-items:center; gap:5px; font-size:9px; }
+.aura-monitor-disk b { font-size:10px; }
+.aura-monitor-disk span { color:var(--muted); text-align:right; white-space:nowrap; }
+.aura-monitor-disk strong { font-size:10px; font-variant-numeric:tabular-nums; }
+.aura-monitor-disk .monitor-track { margin-top:3px; }
+.aura-monitor-io { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px; margin-top:8px; }
+.aura-monitor-io > div { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:2px 4px; padding:5px 6px; border-radius:6px; background:var(--surface); min-width:0; }
+.aura-monitor-io span { color:var(--muted); font-size:9px; }
+.aura-monitor-io b { font-size:10px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.aura-monitor-io small { grid-column:1 / -1; color:var(--muted); font-size:9px; }
+.aura-monitor-system { display:flex; flex-wrap:wrap; gap:4px 8px; margin-top:7px; color:var(--muted); font-size:9px; }
+.aura-monitor-system span { overflow-wrap:anywhere; }
+.aura-monitor-card-foot { margin-top:6px; padding-top:5px; border-top:1px solid var(--line); color:var(--muted); font-size:9px; overflow-wrap:anywhere; }
+.aura-monitor-message { margin:7px 0 2px; color:var(--muted); font-size:10px; line-height:1.5; overflow-wrap:anywhere; }
+.aura-monitor-message.error { color:var(--error); }
+@media(max-width:820px) {
+  .aura-monitor { max-height:420px; }
+}

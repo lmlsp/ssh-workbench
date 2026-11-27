@@ -9,9 +9,12 @@ const props=defineProps({ state:Object, visible:Boolean, controls:{type:Object,r
 const folders=reactive(new Map());
 const jobs=reactive(new Map());
 const request=(path,data)=>props.controls.request(path,data);
+// Directory snapshots belong to a server/login identity, not an individual
+// terminal window. Two windows on the same host/user must see the same listing.
 const scope=computed(()=>{
-  const { terminalId, connection, user }=props.state||{};
-  return terminalId&&connection&&user?JSON.stringify([terminalId,connection,user]):null;
+  const { server, connection, user }=props.state||{};
+  const identity=server||connection;
+  return identity&&user?JSON.stringify([identity,user]):null;
 });
 const folder=computed(()=>folders.get(scope.value));
 const showHidden=ref(false);
@@ -61,22 +64,26 @@ function pathFor(directory,name) {
   return directory.replace(/\/$/,'')+'/'+name;
 }
 
-async function browse(directory) {
-  if(!directory||!canBrowse.value||!scope.value)return;
+async function browse(directory,force=false) {
+  if(!directory||!props.state?.filesReady||!scope.value)return;
   const destination=target(directory);
-  if(!folder.value)folders.set(destination.scope,{directory:'',home:'',entries:[],loading:false,error:''});
+  if(!folder.value)folders.set(destination.scope,{directory:'',home:'',entries:[],loading:false,error:'',requestId:0});
   const view=folders.get(destination.scope);
+  if(view.loading&&!force)return;
+  const requestId=(view.requestId||0)+1;
+  view.requestId=requestId;
   view.loading=true;
   view.error='';
   apiError.value='';
   try{
     const result=await request('files',{mode:'list',...destination});
+    if(view.requestId!==requestId)return;
     Object.assign(view,result);
-    if(sameTarget(destination))pathInput.value=result.directory;
+    if(sameTarget(destination)&&destination.terminal===props.state?.terminalId)pathInput.value=result.directory;
   }catch(error){
-    view.error=error.message;
+    if(view.requestId===requestId)view.error=error.message;
   }finally{
-    view.loading=false;
+    if(view.requestId===requestId)view.loading=false;
   }
 }
 
@@ -85,14 +92,22 @@ watch([()=>folder.value?.directory,()=>props.visible],()=>{
   const nav=breadcrumbNav.value;
   if(nav)nav.scrollLeft=nav.scrollWidth;
 },{flush:'post'});
-watch([scope,()=>props.visible,()=>props.state?.filesReady,()=>props.state?.workspace],()=>{
-  if(props.visible&&props.state?.workspace&&!folder.value){
-    void browse(props.state.directory);
-  }else if(props.visible&&folder.value?.refresh&&canBrowse.value){
-    folder.value.refresh=false;
-    void browse(folder.value.directory);
+watch([scope,()=>props.state?.terminalId,()=>props.state?.directory,()=>props.visible,
+  ()=>props.state?.filesReady,()=>props.state?.workspace],(current,previous)=>{
+  const [currentScope,terminalId,directory,visible,ready,workspace]=current;
+  if(!currentScope||!terminalId||!directory||!visible||!ready||!workspace)return;
+  const terminalChanged=!previous||previous[1]!==terminalId;
+  const directoryChanged=!previous||previous[2]!==directory;
+  const becameVisible=!previous||!previous[3];
+  const becameReady=!previous||!previous[4];
+  const view=folders.get(currentScope);
+  if(terminalChanged||directoryChanged||becameVisible||!view||view.refresh||becameReady&&!view.loading){
+    if(view)view.refresh=false;
+    // Force a fresh snapshot on terminal switches, even if another request for
+    // this shared server/user scope is still in flight.
+    void browse(directory,true);
   }
-},{flush:'post'});
+},{flush:'post',immediate:true});
 
 async function updateJobs() {
   if(updating)return;

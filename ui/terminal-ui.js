@@ -440,6 +440,9 @@ class TerminalWorkspace {
     this.watch(this.visible?[...this.panels.values()].filter(panel=>panel.terminal):[]);
     this.drawTabs(); renderSidebar();
     this.persist();
+    // Selection changes also change the active file-browser context. Notify
+    // Vue even when the newly focused terminal has not emitted a PTY event.
+    publishWorkspaceState();
   }
 
   persist() {
